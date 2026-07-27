@@ -1,6 +1,6 @@
 # Simulateur LiDAR France
 
-Prototype vertical open source, CPU-first, destiné à créer des maps 3D locales depuis des données IGN ou des fichiers locaux. 
+Prototype vertical open source, CPU-first, destiné à créer des maps 3D locales depuis des données IGN ou des fichiers locaux. Aucune donnée OpenStreetMap n'est utilisée.
 
 ## Démarrage Windows 11
 
@@ -36,3 +36,25 @@ Le jeu de démonstration contient un MNT synthétique, un bâtiment à toit incl
 Le MVP fournit une reconstruction déterministe simplifiée. Les bâtiments utilisent un LoD2 paramétrique lorsque les points sont suffisants, sinon LoD1. Les arbres sont individualisés par maxima locaux et enveloppes ellipsoïdales. L'acquisition IGN en ligne dépend des capacités et contrats de service publiés au moment d'utilisation. PX4/Gazebo est optionnel sous WSL2. Ce logiciel ne garantit ni l'actualité ni la sécurité opérationnelle d'un vol réel.
 
 Voir `docs/architecture/overview.md`, `docs/data-sources/ign-toolbox.md` et `docs/troubleshooting/surface-pro.md`.
+
+## Raccourci Bureau Windows
+
+Après le bootstrap, créez un raccourci permanent sur le Bureau :
+
+```powershell
+.\scripts\windows\install-desktop-shortcut.ps1
+```
+
+Le raccourci **Simulateur LiDAR France** :
+
+- retrouve automatiquement l'installation Miniforge/Conda ;
+- vérifie que l'environnement `simmap` existe ;
+- construit la démonstration lors du premier lancement ;
+- démarre l'API et l'interface web dans des fenêtres minimisées ;
+- attend que les deux services répondent avant d'ouvrir le navigateur.
+
+Pour reconstruire volontairement la démonstration :
+
+```powershell
+.\scripts\windows\launch.ps1 -RebuildDemo
+```
