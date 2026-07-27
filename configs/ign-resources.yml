@@ -1,0 +1,26 @@
+schema: 1
+policy:
+  forbid_osm: true
+  online_download_requires_validated_resource: true
+resources:
+  lidar_hd:
+    provider: IGN
+    role: primary_geometry
+    discovery: geoplatform_or_product_catalog
+    url: null
+    status: validate-before-use
+  mnt_lidar_hd:
+    provider: IGN
+    role: terrain_reference
+    url: null
+    status: validate-before-use
+  bd_ortho:
+    provider: IGN
+    role: planimetric_observation
+    url: null
+    status: validate-before-use
+  bd_topo:
+    provider: IGN
+    role: semantic_topology_fallback
+    url: null
+    status: validate-before-use

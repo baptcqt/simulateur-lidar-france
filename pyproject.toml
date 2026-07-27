@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "simmap"
+version = "0.1.0"
+description = "Prototype CPU-first de reconstruction 3D à partir de données IGN"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = {file = "LICENSE"}
+authors = [{name="Simulateur LiDAR France contributors"}]
+dependencies = [
+  "numpy>=1.26,<3",
+  "typer>=0.12,<1",
+  "pydantic>=2.7,<3",
+  "fastapi>=0.115,<1",
+  "uvicorn>=0.30,<1",
+  "psutil>=6,<8",
+  "trimesh>=4.4,<5",
+  "pyproj>=3.6,<4",
+  "shapely>=2.0,<3",
+]
+
+[project.optional-dependencies]
+geo = ["rasterio>=1.3,<2", "geopandas>=1.0,<2", "laspy[lazrs]>=2.5,<3"]
+dev = ["pytest>=8,<10", "ruff>=0.9,<1", "mypy>=1.13,<2", "httpx>=0.27,<1"]
+
+[project.scripts]
+simmap = "simmap.cli.app:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["packages/simmap"]
+
+[tool.pytest.ini_options]
+pythonpath = ["packages"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true

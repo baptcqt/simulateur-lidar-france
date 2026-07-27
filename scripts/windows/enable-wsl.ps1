@@ -1,0 +1,1 @@
+Write-Host 'Commande administrateur explicite: wsl --install -d Ubuntu-24.04'; Write-Host 'Un redémarrage peut être demandé par Windows.' 

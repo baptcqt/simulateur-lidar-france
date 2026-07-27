@@ -1,0 +1,1 @@
+Les données volumineuses, téléchargements IGN et builds restent hors Git. Le jeu `samples/demo` est généré par `scripts/ci/generate-demo.py` et ne prétend pas être une donnée IGN.

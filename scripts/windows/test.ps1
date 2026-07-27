@@ -1,0 +1,1 @@
+Set-Location (Resolve-Path "$PSScriptRoot\..\.."); python -m pytest -q; if(Test-Path node_modules){npm test}

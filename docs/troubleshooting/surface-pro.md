@@ -1,0 +1,2 @@
+# Surface Pro 9
+Utiliser le profil `surface`, une emprise initiale ≤ 500 m, fidélité 30–55, chunks 250 m et rendu Godot Compatibility. Fermer les applications consommatrices de mémoire. Le diagnostic recommande sans bloquer. Un écran noir Godot justifie une mise à jour du pilote Intel et le maintien du renderer Compatibility.

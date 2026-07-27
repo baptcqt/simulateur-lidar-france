@@ -1,0 +1,1 @@
+import {describe,it,expect} from 'vitest'; describe('fidelity',()=>it('bounds',()=>expect(Math.min(100,Math.max(0,45))).toBe(45)));

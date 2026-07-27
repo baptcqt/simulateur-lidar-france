@@ -1,0 +1,1 @@
+Set-Location (Resolve-Path "$PSScriptRoot\..\.."); git pull --ff-only; python -m pip install -e '.[dev]'; npm install

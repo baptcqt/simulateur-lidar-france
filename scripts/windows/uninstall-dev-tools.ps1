@@ -1,0 +1,1 @@
+Write-Host 'Par sécurité, ce script ne désinstalle rien automatiquement. Utilisez winget uninstall avec les identifiants affichés par winget list.' 

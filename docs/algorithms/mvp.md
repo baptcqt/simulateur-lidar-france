@@ -1,0 +1,2 @@
+# Algorithmes MVP
+Terrain : grille MNT régulière, triangulation à diagonale constante, normales glTF. Bâtiment : volume fermé à toit à deux pans, repli LoD1 prévu par score. Routes : surfaces observées/masques puis rattachement topologique. Arbres : maxima locaux conceptuels, paramètres individuels, tronc et couronne procédurale contrainte. Pont : tablier indépendant, aucun remplissage du vide inférieur.
