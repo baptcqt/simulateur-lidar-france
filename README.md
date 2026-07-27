@@ -1,6 +1,6 @@
 # Simulateur LiDAR France
 
-Prototype vertical open source, CPU-first, destiné à créer des maps 3D locales depuis des données IGN ou des fichiers locaux. Aucune donnée OpenStreetMap n'est utilisée.
+Prototype vertical open source, CPU-first, destiné à créer des maps 3D locales depuis des données IGN ou des fichiers locaux. 
 
 ## Démarrage Windows 11
 
