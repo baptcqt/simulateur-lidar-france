@@ -1,2 +1,0 @@
-# Feuille de route
-MVP : parcours synthétique et imports locaux. Bêta : acquisition Géoplateforme validée, COPC progressif iTowns, corrections manuelles. R&D : LoD2 multi-plans, FLAIR/MAESTRO, PureForest, 3D Tiles, photogrammétrie MicMac.

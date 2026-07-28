@@ -1,2 +1,0 @@
-# ADR 0002 — aucune dépendance OSM
-Décision : navigation, acquisition et sémantique françaises reposent exclusivement sur IGN ou les fichiers locaux de l'utilisateur. Un test inspecte les dépendances et sources.

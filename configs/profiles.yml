@@ -1,3 +1,0 @@
-surface: {chunk_m: 250, target_ram_gb: 8, default_fidelity: 45}
-standard: {chunk_m: 250, target_ram_gb: 16, default_fidelity: 65}
-quality: {chunk_m: 125, target_ram_gb: 32, default_fidelity: 85}

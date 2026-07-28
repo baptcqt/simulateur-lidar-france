@@ -1,2 +1,0 @@
-# ADR 0001 — repère local métrique
-Décision : conserver les coordonnées source dans le manifeste et soustraire une origine locale avant export 3D. Motif : précision flottante de Godot/Gazebo et continuité des chunks.

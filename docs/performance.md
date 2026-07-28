@@ -1,2 +1,0 @@
-# Performance
-Ne jamais charger un LAZ/COPC complet. Filtrer spatialement avec PDAL, traiter par chunks, limiter la fraction de points et séparer collision/visuel. Les estimations sont relatives, pas des promesses de durée.

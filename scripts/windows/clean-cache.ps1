@@ -1,1 +1,0 @@
-param([switch]$Force); $p=Join-Path $env:LOCALAPPDATA 'SimMap'; if($Force -and (Test-Path $p)){Remove-Item $p -Recurse -Force}else{Write-Host "Cache: $p (utiliser -Force)"}
