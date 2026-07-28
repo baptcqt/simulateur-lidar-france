@@ -9,8 +9,8 @@ Prototype web open source centré sur **iTowns** pour explorer les données IGN 
 3. L’application recherche automatiquement la dalle COPC correspondant au centre de la sélection.
 4. Cliquer sur **Afficher le LiDAR**.
 5. Le fichier est téléchargé ou repris depuis le cache local.
-6. Une vue COPC native iTowns remplace temporairement la carte et cadre automatiquement le nuage de points.
-7. Cliquer sur **Revenir à la carte** pour retrouver exactement la carte et la position précédentes.
+6. Une vue 3D iTowns affiche ensemble l’orthophoto IGN, le MNT haute résolution et le nuage COPC géoréférencé.
+7. Cliquer sur **Revenir à la carte** pour retrouver la carte et la position précédentes.
 
 L’interface ne présente pas les détails techniques du cache, des requêtes HTTP partielles ou du décodeur. Ces opérations sont automatiques.
 
@@ -19,7 +19,7 @@ L’interface ne présente pas les détails techniques du cache, des requêtes H
 Le bloc repliable **Dalles déjà téléchargées** permet de travailler sans nouvelle recherche IGN :
 
 - la dalle `.copc.laz` la plus récente de `data/lidar` est sélectionnée automatiquement ;
-- **Afficher la dalle enregistrée** l’ouvre directement dans la vue native iTowns ;
+- **Afficher la dalle enregistrée** l’ouvre directement dans la vue 3D ;
 - **Choisir un fichier…** ouvre la boîte de dialogue Windows, copie le fichier choisi dans `data/lidar`, puis l’affiche ;
 - **Ouvrir le dossier** ouvre `data/lidar` dans l’Explorateur Windows.
 
@@ -27,12 +27,15 @@ Seuls les fichiers `.copc.laz` sont acceptés, car iTowns doit pouvoir lire l’
 
 ## Architecture d’affichage
 
-Deux vues iTowns partagent le même espace visuel :
+La carte de sélection et la vue de travail sont séparées :
 
-- une `GlobeView` conserve la carte IGN, la recherche et la sélection ;
-- une `View` avec `PlanarControls` et `CopcLayer` ouvre le fichier COPC dans son système de coordonnées natif.
+- `index.html` contient la `GlobeView` de recherche et de sélection ;
+- `lidar.html` contient une `GlobeView` dédiée au terrain 3D ;
+- la vue terrain combine une orthophoto IGN, l’`ElevationLayer` `ELEVATION.ELEVATIONGRIDCOVERAGE.HIGHRES` et une `CopcLayer` ;
+- le `CopcLayer` est reprojeté vers le repère géocentrique de la `GlobeView`, conformément à l’exemple officiel iTowns ;
+- les points sont colorés par classification LAS pour distinguer sol, végétation, bâtiments, eau et voirie.
 
-Les points LAZ sont décompressés dans le navigateur avec **laz-perf WebAssembly**. Le fichier `laz-perf.wasm` est copié dans `web/public/laz-perf` pendant l’installation et servi localement. Le rendu LiDAR ne dépend donc plus d’un CDN externe.
+Les points LAZ sont décompressés dans le navigateur avec **laz-perf WebAssembly**. Le fichier `laz-perf.wasm` est copié dans `web/public/laz-perf` pendant l’installation et servi localement. Un worker Vite local utilise le `LASLoader` officiel d’iTowns afin de conserver une URL de worker stable.
 
 ## Installation Windows 11
 
@@ -95,8 +98,8 @@ VITE_API_URL=http://127.0.0.1:8000
 ## Structure
 
 ```text
-web/                 carte IGN, vue COPC native et sélection de fichiers locaux
-web/scripts/         préparation des ressources WebAssembly
+web/                 carte IGN, vue terrain 3D et sélection de fichiers locaux
+web/scripts/         préparation et vérification des ressources WebAssembly
 server/              proxy IGN, cache COPC, import local et service Range HTTP
 tests/               tests de l’API locale
 configs/             catalogue logique des couches IGN
@@ -106,8 +109,8 @@ scripts/windows/     installation et lancement Windows
 
 ## Roadmap
 
-1. Valider l’affichage COPC natif sur les dalles IGN.
-2. Ajouter le MNT / terrain IGN réel.
+1. **Terminé :** lecture, décompression et rendu des dalles COPC IGN.
+2. **En cours :** terrain IGN réel, orthophoto et géoréférencement du LiDAR dans une `GlobeView`.
 3. Ajouter les filtres LiDAR : classes, altitude, densité et taille des points.
 4. Réintégrer le pipeline de reconstruction et les exports GLB/Godot.
 5. Ajouter une caméra type drone et la manette.
