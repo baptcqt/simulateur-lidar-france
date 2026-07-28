@@ -58,6 +58,9 @@ if ($LASTEXITCODE -ne 0) { throw 'L’installation des dépendances web a échou
 & node (Join-Path $Root 'web\scripts\copy-laz-perf.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'La préparation du décodeur LiDAR a échoué.' }
 
+& npm run verify:itowns --prefix web
+if ($LASTEXITCODE -ne 0) { throw 'La chaîne COPC iTowns est incomplète ou incohérente.' }
+
 Stop-ProjectListener -Port 8000
 Stop-ProjectListener -Port 5173
 Start-Sleep -Milliseconds 700
