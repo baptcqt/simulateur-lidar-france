@@ -11,21 +11,16 @@ if (!viewer || !status || !backButton) {
 }
 
 const LAMBERT_93 = '+proj=lcc +lat_1=49 +lat_2=44 +lat_0=46.5 +lon_0=3 +x_0=700000 +y_0=6600000 +ellps=GRS80 +units=m +no_defs';
-const AUTO_LOAD_GRACE_MS = 2_500;
+const WMTS_URL = (import.meta.env.VITE_IGN_WMTS_URL as string | undefined) ?? 'https://data.geopf.fr/wmts';
+const ORTHO_LAYER = (import.meta.env.VITE_IGN_ORTHO_LAYER as string | undefined) ?? 'ORTHOIMAGERY.ORTHOPHOTOS';
+const POINT_TIMEOUT_MS = 60_000;
 const ROOT_LOAD_TIMEOUT_MS = 60_000;
-const EXTENT_TIMEOUT_MS = 10_000;
 
 type PageState = 'loading' | 'success' | 'error';
-
-type PointStats = {
-  points: number;
-  nodes: number;
-};
-
-type CameraFrame = {
-  center: THREE.Vector3;
-  size: THREE.Vector3;
-  origin: 'voxelOBB' | 'bbox' | 'COPC info cube';
+type PointStats = { points: number; nodes: number };
+type CopcFrame = {
+  center: any;
+  range: number;
 };
 
 function setStatus(state: PageState, message: string): void {
@@ -60,12 +55,8 @@ async function withTimeout<T>(promise: Promise<T>, milliseconds: number, label: 
 }
 
 function assertBrowserCapabilities(): void {
-  if (typeof WebAssembly === 'undefined') {
-    throw new Error('WebAssembly est désactivé dans ce navigateur.');
-  }
-  if (typeof Worker === 'undefined') {
-    throw new Error('Les Web Workers sont désactivés dans ce navigateur.');
-  }
+  if (typeof WebAssembly === 'undefined') throw new Error('WebAssembly est désactivé dans ce navigateur.');
+  if (typeof Worker === 'undefined') throw new Error('Les Web Workers sont désactivés dans ce navigateur.');
   const canvas = document.createElement('canvas');
   if (!canvas.getContext('webgl2') && !canvas.getContext('webgl')) {
     throw new Error('WebGL est désactivé. Activez l’accélération graphique du navigateur.');
@@ -78,12 +69,10 @@ async function probeCopc(url: string): Promise<number | null> {
     throw new Error(`Le serveur n’accepte pas les lectures partielles nécessaires au COPC (HTTP ${response.status}).`);
   }
   const bytes = await response.arrayBuffer();
-  const signature = new TextDecoder('ascii').decode(bytes.slice(0, 4));
-  if (signature !== 'LASF') {
+  if (new TextDecoder('ascii').decode(bytes.slice(0, 4)) !== 'LASF') {
     throw new Error('Le fichier sélectionné n’est pas un fichier LAS/COPC valide.');
   }
-  const range = response.headers.get('Content-Range');
-  const total = range?.match(/\/(\d+)$/)?.[1];
+  const total = response.headers.get('Content-Range')?.match(/\/(\d+)$/)?.[1];
   return total ? Number(total) : null;
 }
 
@@ -96,246 +85,190 @@ function normalizeSourceCrs(source: any, url: string, label: string): string {
   if (isIgnLambert93(url, label)) {
     itowns.CRS.defs('EPSG:2154', LAMBERT_93);
     source.crs = 'EPSG:2154';
-    return 'EPSG:2154';
   }
-  if (!source.crs) {
-    throw new Error('Le système de coordonnées du COPC est introuvable.');
-  }
+  if (!source.crs) throw new Error('Le système de coordonnées du COPC est introuvable.');
   return source.crs;
 }
 
-function validVector(vector: THREE.Vector3): boolean {
-  return [vector.x, vector.y, vector.z].every(Number.isFinite);
-}
-
-function frameFromLayer(layer: any, source: any): CameraFrame | null {
-  const obb = layer.root?.voxelOBB;
-  if (obb?.box3D?.getCenter && obb?.box3D?.getSize) {
-    const center = obb.box3D.getCenter(new THREE.Vector3());
-    obb.localToWorld?.(center);
-    const size = obb.box3D.getSize(new THREE.Vector3());
-    if (validVector(center) && validVector(size) && size.length() > 0) {
-      return { center, size, origin: 'voxelOBB' };
-    }
-  }
-
-  const bbox = layer.root?.bbox;
-  if (bbox?.getCenter && bbox?.getSize) {
-    const center = bbox.getCenter(new THREE.Vector3());
-    const size = bbox.getSize(new THREE.Vector3());
-    if (validVector(center) && validVector(size) && size.length() > 0) {
-      return { center, size, origin: 'bbox' };
-    }
-  }
-
+function frameFromCopc(source: any): CopcFrame {
   const cube = source.info?.cube;
-  if (Array.isArray(cube) && cube.length >= 6 && cube.slice(0, 6).every(Number.isFinite)) {
-    const box = new THREE.Box3(
-      new THREE.Vector3(cube[0], cube[1], cube[2]),
-      new THREE.Vector3(cube[3], cube[4], cube[5]),
-    );
-    const center = box.getCenter(new THREE.Vector3());
-    const size = box.getSize(new THREE.Vector3());
-    if (validVector(center) && validVector(size) && size.length() > 0) {
-      return { center, size, origin: 'COPC info cube' };
-    }
+  if (!Array.isArray(cube) || cube.length < 6 || !cube.slice(0, 6).every(Number.isFinite)) {
+    throw new Error('L’emprise géographique du COPC est indisponible.');
   }
 
-  return null;
+  const centerX = (cube[0] + cube[3]) / 2;
+  const centerY = (cube[1] + cube[4]) / 2;
+  const centerZ = (cube[2] + cube[5]) / 2;
+  const width = Math.abs(cube[3] - cube[0]);
+  const height = Math.abs(cube[4] - cube[1]);
+  const center = new itowns.Coordinates(source.crs, centerX, centerY, centerZ).as('EPSG:4326');
+  const range = Math.max(1_200, Math.hypot(width, height) * 1.15);
+  return { center, range };
 }
 
-async function waitForCameraFrame(layer: any, source: any): Promise<CameraFrame> {
-  const startedAt = performance.now();
-  while (performance.now() - startedAt < EXTENT_TIMEOUT_MS) {
-    const frame = frameFromLayer(layer, source);
-    if (frame) return frame;
-    await delay(50);
-  }
-  throw new Error('iTowns a lu les métadonnées, mais aucune emprise 3D exploitable n’a été trouvée.');
+function createOrthoLayer(): any {
+  const source = new itowns.WMTSSource({
+    url: WMTS_URL,
+    name: ORTHO_LAYER,
+    tileMatrixSet: 'PM',
+    format: 'image/jpeg',
+    style: 'normal',
+    crs: 'EPSG:3857',
+  });
+  return new itowns.ColorLayer('IGN_ORTHO', { source });
 }
 
-function zoomToFrame(view: any, frame: CameraFrame): void {
-  const length = frame.size.length();
-  const camera = view.camera3D as THREE.PerspectiveCamera;
-  const fov = THREE.MathUtils.degToRad(camera.fov);
-  const radius = Math.max(length / 2, 1);
-  const distance = radius / Math.tan(fov / 2);
+function createElevationLayer(): any {
+  const source = new itowns.WMTSSource({
+    url: `${WMTS_URL}?`,
+    crs: 'EPSG:4326',
+    format: 'image/x-bil;bits=32',
+    name: 'ELEVATION.ELEVATIONGRIDCOVERAGE.HIGHRES',
+    tileMatrixSet: 'WGS84G',
+    tileMatrixSetLimits: {
+      11: { minTileRow: 442, maxTileRow: 1267, minTileCol: 1344, maxTileCol: 2683 },
+      12: { minTileRow: 885, maxTileRow: 2343, minTileCol: 3978, maxTileCol: 5126 },
+      13: { minTileRow: 1770, maxTileRow: 4687, minTileCol: 7957, maxTileCol: 10253 },
+      14: { minTileRow: 3540, maxTileRow: 9375, minTileCol: 15914, maxTileCol: 20507 },
+    },
+  });
 
-  camera.position.copy(frame.center).addScaledVector(new THREE.Vector3(0, 0, 1), distance);
-  camera.up.set(0, 1, 0);
-  camera.near = Math.max(distance / 100_000, 0.1);
-  camera.far = Math.max(2 * distance, 1_000);
-  camera.lookAt(frame.center);
-  camera.updateProjectionMatrix();
-  camera.updateMatrixWorld(true);
-  view.notifyChange(camera);
+  return new itowns.ElevationLayer('IGN_MNT_HIGHRES', {
+    source,
+    noDataValue: -99999,
+    clampValues: { min: 0 },
+    updateStrategy: { type: 1, options: { groups: [11, 14] } },
+  } as any);
 }
 
 function countPoints(layer: any): PointStats {
   let points = 0;
   let nodes = 0;
   layer.group?.traverse((object: any) => {
-    if (!object.isPoints) return;
+    if (!object.isPoints || !object.visible) return;
     const count = Number(object.geometry?.getAttribute('position')?.count ?? 0);
     if (count <= 0) return;
-    nodes += 1;
     points += count;
+    nodes += 1;
   });
   return { points, nodes };
 }
 
-async function waitForRenderedPoints(
-  view: any,
-  layer: any,
-  loadError: () => Error | null,
-  milliseconds: number,
-): Promise<PointStats | null> {
-  const startedAt = performance.now();
-  while (performance.now() - startedAt < milliseconds) {
-    const error = loadError();
-    if (error) throw error;
-
-    const stats = countPoints(layer);
-    if (stats.points > 0) return stats;
-
-    view.notifyChange(view.camera3D);
-    await delay(200);
-  }
-  return null;
-}
-
 function attachRootPoints(view: any, layer: any, root: any, points: THREE.Points): PointStats {
   const count = Number(points.geometry?.getAttribute('position')?.count ?? 0);
-  if (count <= 0) {
-    throw new Error('Le premier bloc LAZ a été décodé, mais sa géométrie ne contient aucune position.');
-  }
+  if (count <= 0) throw new Error('Le premier bloc LAZ ne contient aucune position.');
 
   root.obj = points;
+  root.tightbbox = (points as any).tightbbox ?? points.geometry.boundingBox;
   root.visible = true;
   points.visible = true;
   points.frustumCulled = false;
-
-  if (points.parent !== layer.group) {
-    layer.group.add(points);
-  }
+  if (points.parent !== layer.group) layer.group.add(points);
   points.updateMatrixWorld(true);
-  (points as any).matrixWorldInverse = points.matrixWorld.clone().invert();
   layer.group.updateMatrixWorld(true);
-  view.scene.updateMatrixWorld(true);
-
-  // Le LOD automatique pourra reprendre ensuite. La présence de root.obj évite
-  // qu’iTowns ne redemande le même bloc.
   layer.displayedCount = count;
-  layer.setNodeVisible?.(root, true);
   view.notifyChange(layer);
-
   return { points: count, nodes: 1 };
 }
 
 async function loadRootExplicitly(view: any, layer: any): Promise<PointStats> {
   const root = layer.root;
   if (!root) throw new Error('La racine de l’octree COPC est absente.');
-
-  if (root.obj?.isPoints) {
-    return attachRootPoints(view, layer, root, root.obj as THREE.Points);
-  }
-
-  // Une commande automatique peut avoir démarré juste avant le secours.
-  if (root.promise) {
-    try {
-      await withTimeout(Promise.resolve(root.promise), 5_000, 'Chargement automatique de la racine');
-    } catch {
-      // On poursuit avec une commande explicite, qui remontera l’erreur réelle.
-    }
-    if (root.obj?.isPoints) {
-      return attachRootPoints(view, layer, root, root.obj as THREE.Points);
-    }
-  }
+  if (root.obj?.isPoints) return attachRootPoints(view, layer, root, root.obj);
 
   root.visible = true;
   const scheduler = view.mainLoop?.scheduler;
-  if (!scheduler?.execute) {
-    throw new Error('Le scheduler pointcloud d’iTowns est indisponible.');
-  }
+  if (!scheduler?.execute) throw new Error('Le scheduler pointcloud d’iTowns est indisponible.');
 
-  let points: THREE.Points;
-  try {
-    points = await withTimeout(
-      scheduler.execute({
-        layer,
-        requester: root,
-        view,
-        priority: Number.MAX_SAFE_INTEGER,
-        redraw: true,
-      }) as Promise<THREE.Points>,
-      ROOT_LOAD_TIMEOUT_MS,
-      'Décodage du premier bloc LAZ',
-    );
-  } catch (error) {
-    throw new Error(`Chargement explicite de la racine COPC impossible : ${errorMessage(error)}`);
-  }
-
+  const points = await withTimeout(
+    scheduler.execute({
+      layer,
+      requester: root,
+      view,
+      priority: Number.MAX_SAFE_INTEGER,
+      redraw: true,
+    }) as Promise<THREE.Points>,
+    ROOT_LOAD_TIMEOUT_MS,
+    'Décodage du premier bloc LAZ',
+  );
   return attachRootPoints(view, layer, root, points);
+}
+
+async function waitForPoints(view: any, layer: any, getLoadError: () => Error | null): Promise<PointStats> {
+  const startedAt = performance.now();
+  while (performance.now() - startedAt < POINT_TIMEOUT_MS) {
+    const loadError = getLoadError();
+    if (loadError) throw loadError;
+    const stats = countPoints(layer);
+    if (stats.points > 0) return stats;
+    view.notifyChange(view.camera3D);
+    await delay(250);
+  }
+  return loadRootExplicitly(view, layer);
 }
 
 async function openCopc(): Promise<void> {
   const params = new URL(window.location.href).searchParams;
   const url = params.get('copc');
   const label = params.get('label') || 'Dalle COPC';
-  if (!url) throw new Error('Aucune URL COPC n’a été fournie à la vue iTowns.');
+  if (!url) throw new Error('Aucune URL COPC n’a été fournie.');
 
   const parsedUrl = new URL(url, window.location.href);
-  if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
-    throw new Error('L’URL COPC doit utiliser HTTP ou HTTPS.');
-  }
+  if (!['http:', 'https:'].includes(parsedUrl.protocol)) throw new Error('L’URL COPC doit utiliser HTTP ou HTTPS.');
 
   assertBrowserCapabilities();
-  setStatus('loading', `Vérification de ${label}…`);
+  setStatus('loading', `Lecture de ${label}…`);
   const fileSize = await probeCopc(parsedUrl.toString());
-
-  itowns.LASParser.enableLazPerf('/laz-perf');
-
-  setStatus('loading', `Lecture des métadonnées COPC${fileSize ? ` — ${(fileSize / 1024 / 1024).toFixed(1)} Mo` : ''}…`);
   const source = new itowns.CopcSource({ url: parsedUrl.toString() });
   await source.whenReady;
-  const crs = normalizeSourceCrs(source, parsedUrl.toString(), label);
+  normalizeSourceCrs(source, parsedUrl.toString(), label);
+  const frame = frameFromCopc(source);
 
-  const view = new itowns.View(crs, viewer);
-  const controls = new itowns.PlanarControls(view);
-  view.controls = controls;
-  view.mainLoop.gfxEngine.renderer.setClearColor(0x202225);
+  setStatus('loading', `Création du terrain IGN${fileSize ? ` — ${(fileSize / 1024 / 1024).toFixed(1)} Mo` : ''}…`);
+  const view = new itowns.GlobeView(viewer, {
+    coord: frame.center,
+    range: frame.range,
+    tilt: 55,
+    heading: 0,
+  }, {
+    realisticLighting: false,
+  });
+
+  view.mainLoop.gfxEngine.renderer.setClearColor(0x9bb7cc);
+  await Promise.all([
+    view.addLayer(createOrthoLayer()),
+    view.addLayer(createElevationLayer()),
+  ]);
 
   let workerError: Error | null = null;
   const layer = new itowns.CopcLayer('COPC', {
     source,
-    crs,
+    crs: view.referenceCrs,
     sseThreshold: 2,
     pointBudget: 3_000_000,
     pointSize: 2,
-    mode: itowns.PNTS_MODE.INTENSITY,
+    mode: itowns.PNTS_MODE.CLASSIFICATION,
+    opacity: 0.92,
   });
-
   layer.addEventListener('load-error', (event: any) => {
     if (event?.error?.isCancelledCommandException) return;
-    workerError = new Error(`Le worker LAZ iTowns a échoué : ${errorMessage(event?.error)}`);
+    workerError = new Error(`Décodage LiDAR impossible : ${errorMessage(event?.error)}`);
   });
 
-  setStatus('loading', `Ouverture de ${label} dans iTowns…`);
-  await view.addLayer(layer);
+  setStatus('loading', 'Placement du LiDAR sur le terrain 3D…');
+  await (itowns.View.prototype.addLayer.call(view, layer) as Promise<any>);
   await layer.whenReady;
+  await view.controls.lookAtCoordinate({
+    coord: frame.center,
+    range: frame.range,
+    tilt: 55,
+    heading: 0,
+    time: 0,
+  });
+  view.notifyChange(view.camera3D);
 
-  const frame = await waitForCameraFrame(layer, source);
-  zoomToFrame(view, frame);
-  const rootPoints = Number(layer.root?.numPoints ?? 0);
-  setStatus('loading', `Emprise ${frame.origin} trouvée. Chargement automatique de ${rootPoints.toLocaleString('fr-FR')} points…`);
-
-  let stats = await waitForRenderedPoints(view, layer, () => workerError, AUTO_LOAD_GRACE_MS);
-  if (!stats) {
-    setStatus('loading', `Le LOD automatique n’a pas demandé la racine. Chargement direct du premier bloc (${rootPoints.toLocaleString('fr-FR')} points)…`);
-    stats = await loadRootExplicitly(view, layer);
-  }
-
-  setStatus('success', `${label} — ${stats.points.toLocaleString('fr-FR')} points chargés dans iTowns.`);
+  const stats = await waitForPoints(view, layer, () => workerError);
+  setStatus('success', `${label} — terrain IGN et ${stats.points.toLocaleString('fr-FR')} points LiDAR affichés.`);
 
   window.addEventListener('resize', () => {
     view.resize?.();
@@ -349,7 +282,6 @@ backButton.addEventListener('click', () => {
 });
 
 void openCopc().catch((error: unknown) => {
-  const message = errorMessage(error);
-  console.error('[Vue COPC iTowns]', error);
-  setStatus('error', message);
+  console.error('[Vue terrain LiDAR iTowns]', error);
+  setStatus('error', errorMessage(error));
 });
