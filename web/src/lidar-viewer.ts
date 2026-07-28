@@ -11,7 +11,8 @@ if (!viewer || !status || !backButton) {
 }
 
 const LAMBERT_93 = '+proj=lcc +lat_1=49 +lat_2=44 +lat_0=46.5 +lon_0=3 +x_0=700000 +y_0=6600000 +ellps=GRS80 +units=m +no_defs';
-const POINT_TIMEOUT_MS = 45_000;
+const AUTO_LOAD_GRACE_MS = 2_500;
+const ROOT_LOAD_TIMEOUT_MS = 60_000;
 const EXTENT_TIMEOUT_MS = 10_000;
 
 type PageState = 'loading' | 'success' | 'error';
@@ -39,6 +40,22 @@ function errorMessage(value: unknown): string {
     return JSON.stringify(value);
   } catch {
     return String(value);
+  }
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+async function withTimeout<T>(promise: Promise<T>, milliseconds: number, label: string): Promise<T> {
+  let timer: number | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = window.setTimeout(() => reject(new Error(`${label} : délai dépassé.`)), milliseconds);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer !== undefined) window.clearTimeout(timer);
   }
 }
 
@@ -76,9 +93,6 @@ function isIgnLambert93(url: string, label: string): boolean {
 }
 
 function normalizeSourceCrs(source: any, url: string, label: string): string {
-  // Les COPC IGN portent souvent un CRS composé Lambert-93 + altitude IGN69.
-  // iTowns 2.46 ne gère pas complètement les CRS composés : on aligne donc
-  // explicitement la source, la couche et la vue sur la partie horizontale.
   if (isIgnLambert93(url, label)) {
     itowns.CRS.defs('EPSG:2154', LAMBERT_93);
     source.crs = 'EPSG:2154';
@@ -95,7 +109,6 @@ function validVector(vector: THREE.Vector3): boolean {
 }
 
 function frameFromLayer(layer: any, source: any): CameraFrame | null {
-  // Structure utilisée par les versions récentes d’iTowns.
   const obb = layer.root?.voxelOBB;
   if (obb?.box3D?.getCenter && obb?.box3D?.getSize) {
     const center = obb.box3D.getCenter(new THREE.Vector3());
@@ -106,7 +119,6 @@ function frameFromLayer(layer: any, source: any): CameraFrame | null {
     }
   }
 
-  // Structure exposée par certaines distributions iTowns 2.46.
   const bbox = layer.root?.bbox;
   if (bbox?.getCenter && bbox?.getSize) {
     const center = bbox.getCenter(new THREE.Vector3());
@@ -116,8 +128,6 @@ function frameFromLayer(layer: any, source: any): CameraFrame | null {
     }
   }
 
-  // Le VLR COPC info contient toujours le cube racine. Il permet de cadrer la
-  // vue même si le nom de la propriété interne du nœud change entre versions.
   const cube = source.info?.cube;
   if (Array.isArray(cube) && cube.length >= 6 && cube.slice(0, 6).every(Number.isFinite)) {
     const box = new THREE.Box3(
@@ -139,7 +149,7 @@ async function waitForCameraFrame(layer: any, source: any): Promise<CameraFrame>
   while (performance.now() - startedAt < EXTENT_TIMEOUT_MS) {
     const frame = frameFromLayer(layer, source);
     if (frame) return frame;
-    await new Promise((resolve) => window.setTimeout(resolve, 50));
+    await delay(50);
   }
   throw new Error('iTowns a lu les métadonnées, mais aucune emprise 3D exploitable n’a été trouvée.');
 }
@@ -157,6 +167,7 @@ function zoomToFrame(view: any, frame: CameraFrame): void {
   camera.far = Math.max(2 * distance, 1_000);
   camera.lookAt(frame.center);
   camera.updateProjectionMatrix();
+  camera.updateMatrixWorld(true);
   view.notifyChange(camera);
 }
 
@@ -165,32 +176,106 @@ function countPoints(layer: any): PointStats {
   let nodes = 0;
   layer.group?.traverse((object: any) => {
     if (!object.isPoints) return;
+    const count = Number(object.geometry?.getAttribute('position')?.count ?? 0);
+    if (count <= 0) return;
     nodes += 1;
-    points += object.geometry?.getAttribute('position')?.count ?? 0;
+    points += count;
   });
   return { points, nodes };
 }
 
-async function waitForPoints(view: any, layer: any, loadError: () => Error | null): Promise<PointStats> {
+async function waitForRenderedPoints(
+  view: any,
+  layer: any,
+  loadError: () => Error | null,
+  milliseconds: number,
+): Promise<PointStats | null> {
   const startedAt = performance.now();
-  while (performance.now() - startedAt < POINT_TIMEOUT_MS) {
+  while (performance.now() - startedAt < milliseconds) {
     const error = loadError();
     if (error) throw error;
 
     const stats = countPoints(layer);
-    if (stats.points > 0 || Number(layer.displayedCount) > 0) {
-      return {
-        points: Math.max(stats.points, Number(layer.displayedCount) || 0),
-        nodes: stats.nodes,
-      };
-    }
+    if (stats.points > 0) return stats;
 
     view.notifyChange(view.camera3D);
-    await new Promise((resolve) => window.setTimeout(resolve, 250));
+    await delay(200);
+  }
+  return null;
+}
+
+function attachRootPoints(view: any, layer: any, root: any, points: THREE.Points): PointStats {
+  const count = Number(points.geometry?.getAttribute('position')?.count ?? 0);
+  if (count <= 0) {
+    throw new Error('Le premier bloc LAZ a été décodé, mais sa géométrie ne contient aucune position.');
   }
 
-  const rootPoints = Number(layer.root?.numPoints ?? 0);
-  throw new Error(`iTowns a lu l’octree, mais aucun bloc de points n’a été rendu. Racine annoncée : ${rootPoints.toLocaleString('fr-FR')} points.`);
+  root.obj = points;
+  root.visible = true;
+  points.visible = true;
+  points.frustumCulled = false;
+
+  if (points.parent !== layer.group) {
+    layer.group.add(points);
+  }
+  points.updateMatrixWorld(true);
+  (points as any).matrixWorldInverse = points.matrixWorld.clone().invert();
+  layer.group.updateMatrixWorld(true);
+  view.scene.updateMatrixWorld(true);
+
+  // Le LOD automatique pourra reprendre ensuite. La présence de root.obj évite
+  // qu’iTowns ne redemande le même bloc.
+  layer.displayedCount = count;
+  layer.setNodeVisible?.(root, true);
+  view.notifyChange(layer);
+
+  return { points: count, nodes: 1 };
+}
+
+async function loadRootExplicitly(view: any, layer: any): Promise<PointStats> {
+  const root = layer.root;
+  if (!root) throw new Error('La racine de l’octree COPC est absente.');
+
+  if (root.obj?.isPoints) {
+    return attachRootPoints(view, layer, root, root.obj as THREE.Points);
+  }
+
+  // Une commande automatique peut avoir démarré juste avant le secours.
+  if (root.promise) {
+    try {
+      await withTimeout(Promise.resolve(root.promise), 5_000, 'Chargement automatique de la racine');
+    } catch {
+      // On poursuit avec une commande explicite, qui remontera l’erreur réelle.
+    }
+    if (root.obj?.isPoints) {
+      return attachRootPoints(view, layer, root, root.obj as THREE.Points);
+    }
+  }
+
+  root.visible = true;
+  const scheduler = view.mainLoop?.scheduler;
+  if (!scheduler?.execute) {
+    throw new Error('Le scheduler pointcloud d’iTowns est indisponible.');
+  }
+
+  let points: THREE.Points;
+  try {
+    points = await withTimeout(
+      scheduler.execute({
+        layer,
+        requester: root,
+        view,
+        priority: Number.MAX_SAFE_INTEGER,
+        redraw: true,
+      }) as Promise<THREE.Points>,
+      ROOT_LOAD_TIMEOUT_MS,
+      'Décodage du premier bloc LAZ',
+    );
+  } catch (error) {
+    throw new Error(`Chargement explicite de la racine COPC impossible : ${errorMessage(error)}`);
+  }
+
+  return attachRootPoints(view, layer, root, points);
 }
 
 async function openCopc(): Promise<void> {
@@ -215,8 +300,6 @@ async function openCopc(): Promise<void> {
   await source.whenReady;
   const crs = normalizeSourceCrs(source, parsedUrl.toString(), label);
 
-  // La vue est créée directement dans le CRS final. Cela évite de modifier le
-  // référentiel d’une caméra déjà initialisée.
   const view = new itowns.View(crs, viewer);
   const controls = new itowns.PlanarControls(view);
   view.controls = controls;
@@ -243,9 +326,15 @@ async function openCopc(): Promise<void> {
 
   const frame = await waitForCameraFrame(layer, source);
   zoomToFrame(view, frame);
-  setStatus('loading', `Emprise ${frame.origin} trouvée. Chargement des points…`);
+  const rootPoints = Number(layer.root?.numPoints ?? 0);
+  setStatus('loading', `Emprise ${frame.origin} trouvée. Chargement automatique de ${rootPoints.toLocaleString('fr-FR')} points…`);
 
-  const stats = await waitForPoints(view, layer, () => workerError);
+  let stats = await waitForRenderedPoints(view, layer, () => workerError, AUTO_LOAD_GRACE_MS);
+  if (!stats) {
+    setStatus('loading', `Le LOD automatique n’a pas demandé la racine. Chargement direct du premier bloc (${rootPoints.toLocaleString('fr-FR')} points)…`);
+    stats = await loadRootExplicitly(view, layer);
+  }
+
   setStatus('success', `${label} — ${stats.points.toLocaleString('fr-FR')} points chargés dans iTowns.`);
 
   window.addEventListener('resize', () => {
