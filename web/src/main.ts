@@ -1,7 +1,8 @@
 import * as itowns from 'itowns';
 import './style.css';
 
-type ViewMode = 'satellite' | 'topo' | 'itowns';
+type BaseMode = 'satellite' | 'topo' | 'itowns';
+type CameraMode = 'flat' | 'oblique';
 
 type GeocodeFeature = {
   type: 'Feature';
@@ -43,18 +44,25 @@ app.innerHTML = `
     <section class="block">
       <label>Longitude <input id="lon" type="number" step="0.0001" value="2.3522"></label>
       <label>Latitude <input id="lat" type="number" step="0.0001" value="48.8566"></label>
-      <label>Altitude caméra <input id="alt" type="number" step="10" value="1500"></label>
+      <label>Altitude caméra <input id="alt" type="number" step="10" value="2500"></label>
       <button id="go" type="button">Aller à la position</button>
     </section>
 
     <section class="block">
-      <h2>Vue</h2>
-      <label><input name="view-mode" type="radio" value="satellite" checked> Satellite IGN</label>
-      <label><input name="view-mode" type="radio" value="topo"> Plan IGN / topo</label>
-      <label><input name="view-mode" type="radio" value="itowns"> iTowns 3D neutre</label>
+      <h2>Fond de carte</h2>
+      <label><input name="base-mode" type="radio" value="satellite" checked> Satellite IGN</label>
+      <label><input name="base-mode" type="radio" value="topo"> Plan IGN / topo</label>
+      <label><input name="base-mode" type="radio" value="itowns"> iTowns neutre</label>
     </section>
 
-    <p class="hint">La recherche utilise le géocodage Géoplateforme. Les couches LiDAR, CoSIA et MNT seront ajoutées comme modules séparés.</p>
+    <section class="block">
+      <h2>Angle de vue</h2>
+      <label><input name="camera-mode" type="radio" value="flat" checked> 2D du dessus</label>
+      <label><input name="camera-mode" type="radio" value="oblique"> 3D légère</label>
+      <button id="reset-flat" type="button">Revenir en vue plane</button>
+    </section>
+
+    <p class="hint">Démarrage volontairement en satellite 2D pour limiter la charge GPU. La 3D légère garde un angle faible pour éviter de charger trop de tuiles à l’horizon.</p>
     <div id="status">Initialisation…</div>
   </aside>
   <main id="viewer"></main>
@@ -77,15 +85,24 @@ const satelliteLayerName =
 const topoLayerName = (import.meta.env.VITE_IGN_TOPO_LAYER as string | undefined) ?? 'GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2';
 const apiUrl = ((import.meta.env.VITE_API_URL as string | undefined) ?? 'http://127.0.0.1:8000').replace(/\/$/, '');
 
+const DEFAULT_LON = 2.3522;
+const DEFAULT_LAT = 48.8566;
+const DEFAULT_RANGE = 2500;
+const FLAT_TILT = 0;
+const OBLIQUE_TILT = 18;
+
 const placement = {
-  coord: new itowns.Coordinates('EPSG:4326', 2.3522, 48.8566),
-  range: 1500,
-  tilt: 35,
+  coord: new itowns.Coordinates('EPSG:4326', DEFAULT_LON, DEFAULT_LAT),
+  range: DEFAULT_RANGE,
+  tilt: FLAT_TILT,
   heading: 0,
 };
 
 const view = new itowns.GlobeView(viewerDiv, placement);
-const baseLayers = new Map<ViewMode, any>();
+let activeBaseMode: BaseMode = 'satellite';
+let activeLayerId: string | null = null;
+let cameraMode: CameraMode = 'flat';
+let layerSwitchSequence = 0;
 
 function setStatus(message: string): void {
   if (status) status.textContent = message;
@@ -93,6 +110,18 @@ function setStatus(message: string): void {
 
 function notifyView(): void {
   view.notifyChange();
+}
+
+function currentTilt(): number {
+  return cameraMode === 'flat' ? FLAT_TILT : OBLIQUE_TILT;
+}
+
+function currentPosition(): { lon: number; lat: number; range: number } {
+  return {
+    lon: Number(lonInput?.value ?? DEFAULT_LON) || DEFAULT_LON,
+    lat: Number(latInput?.value ?? DEFAULT_LAT) || DEFAULT_LAT,
+    range: Number(altInput?.value ?? DEFAULT_RANGE) || DEFAULT_RANGE,
+  };
 }
 
 function createWmtsLayer(id: string, layerName: string, format: string): any {
@@ -108,38 +137,59 @@ function createWmtsLayer(id: string, layerName: string, format: string): any {
   return new itowns.ColorLayer(id, { source });
 }
 
-async function initBaseLayers(): Promise<void> {
-  const satellite = createWmtsLayer('base-satellite', satelliteLayerName, 'image/jpeg');
-  const topo = createWmtsLayer('base-topo', topoLayerName, 'image/png');
-
-  baseLayers.set('satellite', satellite);
-  baseLayers.set('topo', topo);
-
-  await view.addLayer(satellite);
-  await view.addLayer(topo);
-
-  setViewMode('satellite');
-  setStatus('Vue prête. Recherchez une adresse ou choisissez un mode de vue.');
+function layerConfig(mode: BaseMode): { label: string; layerName: string; format: string } | null {
+  if (mode === 'satellite') {
+    return { label: 'Satellite IGN', layerName: satelliteLayerName, format: 'image/jpeg' };
+  }
+  if (mode === 'topo') {
+    return { label: 'Plan IGN / topo', layerName: topoLayerName, format: 'image/png' };
+  }
+  return null;
 }
 
-function setViewMode(mode: ViewMode): void {
-  for (const [layerMode, layer] of baseLayers.entries()) {
-    layer.visible = mode === layerMode;
+async function removeActiveBaseLayer(): Promise<void> {
+  if (!activeLayerId) return;
+
+  try {
+    const existing = view.getLayerById(activeLayerId);
+    if (existing) {
+      await Promise.resolve(view.removeLayer(activeLayerId, true));
+    }
+  } catch (error) {
+    console.warn('Suppression de couche impossible', error);
+  } finally {
+    activeLayerId = null;
+  }
+}
+
+async function setBaseMode(mode: BaseMode): Promise<void> {
+  const switchId = ++layerSwitchSequence;
+  activeBaseMode = mode;
+  setStatus('Changement de fond de carte…');
+
+  await removeActiveBaseLayer();
+  if (switchId !== layerSwitchSequence) return;
+
+  const config = layerConfig(mode);
+  if (!config) {
+    setStatus('Vue iTowns neutre active : aucune couche image n’est chargée.');
+    notifyView();
+    return;
   }
 
-  if (mode === 'itowns') {
-    setStatus('Vue iTowns neutre : aucune couche image n’est affichée.');
-  } else if (mode === 'topo') {
-    setStatus('Vue Plan IGN / topo active.');
-  } else {
-    setStatus('Vue satellite IGN active.');
-  }
+  const layerId = `base-${mode}-${switchId}`;
+  const layer = createWmtsLayer(layerId, config.layerName, config.format);
+  activeLayerId = layerId;
 
+  await view.addLayer(layer);
+  if (switchId !== layerSwitchSequence) return;
+
+  setStatus(`${config.label} actif en ${cameraMode === 'flat' ? 'vue 2D' : 'vue 3D légère'}.`);
   notifyView();
 }
 
-function centerOn(lon: number, lat: number, label?: string): void {
-  const range = Number(altInput?.value ?? 1500) || 1500;
+function applyCamera(lon: number, lat: number, label?: string): void {
+  const range = Number(altInput?.value ?? DEFAULT_RANGE) || DEFAULT_RANGE;
 
   if (lonInput) lonInput.value = lon.toFixed(6);
   if (latInput) latInput.value = lat.toFixed(6);
@@ -153,12 +203,22 @@ function centerOn(lon: number, lat: number, label?: string): void {
   void controls.lookAtCoordinate({
     coord: new itowns.Coordinates('EPSG:4326', lon, lat),
     range,
-    tilt: 35,
+    tilt: currentTilt(),
     heading: 0,
-    time: 1200,
+    time: 650,
   });
 
-  setStatus(label ? `Position atteinte : ${label}` : `Position atteinte : ${lat.toFixed(6)}, ${lon.toFixed(6)}`);
+  if (label) {
+    setStatus(`Position atteinte : ${label}`);
+  } else {
+    setStatus(`Position atteinte : ${lat.toFixed(6)}, ${lon.toFixed(6)}`);
+  }
+}
+
+function setCameraMode(mode: CameraMode): void {
+  cameraMode = mode;
+  const { lon, lat } = currentPosition();
+  applyCamera(lon, lat, mode === 'flat' ? 'vue 2D du dessus' : 'vue 3D légère');
 }
 
 function renderSearchResults(features: GeocodeFeature[]): void {
@@ -180,7 +240,7 @@ function renderSearchResults(features: GeocodeFeature[]): void {
     button.type = 'button';
     button.className = 'result-item';
     button.textContent = label;
-    button.addEventListener('click', () => centerOn(lon, lat, label));
+    button.addEventListener('click', () => applyCamera(lon, lat, label));
     list.appendChild(button);
   }
 
@@ -208,15 +268,27 @@ async function searchAddress(query: string): Promise<void> {
   if (features[0]) {
     const [lon, lat] = features[0].geometry.coordinates;
     const label = features[0].properties.label ?? features[0].properties.name;
-    centerOn(lon, lat, label);
+    applyCamera(lon, lat, label);
   } else {
     setStatus('Aucune adresse trouvée.');
   }
 }
 
-void initBaseLayers().catch((error: unknown) => {
+window.addEventListener('error', (event) => {
+  console.error(event.error ?? event.message);
+  setStatus(`Erreur carte : ${event.message}`);
+});
+
+window.addEventListener('unhandledrejection', (event) => {
+  console.error(event.reason);
+  setStatus(`Erreur carte : ${String(event.reason)}`);
+});
+
+void setBaseMode('satellite').then(() => {
+  setCameraMode('flat');
+}).catch((error: unknown) => {
   console.error(error);
-  setStatus(`Erreur couches IGN : ${String(error)}`);
+  setStatus(`Erreur fond de carte : ${String(error)}`);
 });
 
 document.querySelector<HTMLFormElement>('#address-form')?.addEventListener('submit', (event) => {
@@ -229,13 +301,31 @@ document.querySelector<HTMLFormElement>('#address-form')?.addEventListener('subm
 });
 
 document.querySelector<HTMLButtonElement>('#go')?.addEventListener('click', () => {
-  const lon = Number(lonInput?.value ?? 2.3522);
-  const lat = Number(latInput?.value ?? 48.8566);
-  centerOn(lon, lat);
+  const { lon, lat } = currentPosition();
+  applyCamera(lon, lat);
 });
 
-document.querySelectorAll<HTMLInputElement>('input[name="view-mode"]').forEach((input) => {
+document.querySelector<HTMLButtonElement>('#reset-flat')?.addEventListener('click', () => {
+  cameraMode = 'flat';
+  const flatInput = document.querySelector<HTMLInputElement>('input[name="camera-mode"][value="flat"]');
+  if (flatInput) flatInput.checked = true;
+  const { lon, lat } = currentPosition();
+  applyCamera(lon, lat, 'vue 2D du dessus');
+});
+
+document.querySelectorAll<HTMLInputElement>('input[name="base-mode"]').forEach((input) => {
   input.addEventListener('change', () => {
-    if (input.checked) setViewMode(input.value as ViewMode);
+    if (input.checked) {
+      void setBaseMode(input.value as BaseMode).catch((error: unknown) => {
+        console.error(error);
+        setStatus(`Erreur fond de carte : ${String(error)}`);
+      });
+    }
+  });
+});
+
+document.querySelectorAll<HTMLInputElement>('input[name="camera-mode"]').forEach((input) => {
+  input.addEventListener('change', () => {
+    if (input.checked) setCameraMode(input.value as CameraMode);
   });
 });
