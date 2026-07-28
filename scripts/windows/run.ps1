@@ -51,12 +51,9 @@ function Wait-ForUrl {
     throw "$Name n’a pas démarré correctement. Consultez la fenêtre PowerShell correspondante."
 }
 
-$LazPerfSource = Join-Path $Root 'web\node_modules\laz-perf\lib\laz-perf.wasm'
-if (-not (Test-Path $LazPerfSource)) {
-    Write-Host 'Installation de la dépendance locale de décompression LiDAR...'
-    & npm install --prefix web
-    if ($LASTEXITCODE -ne 0) { throw 'L’installation des dépendances web a échoué.' }
-}
+Write-Host 'Synchronisation des dépendances iTowns et du décodeur LiDAR...'
+& npm install --prefix web --no-audit --no-fund
+if ($LASTEXITCODE -ne 0) { throw 'L’installation des dépendances web a échoué.' }
 
 & node (Join-Path $Root 'web\scripts\copy-laz-perf.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'La préparation du décodeur LiDAR a échoué.' }
