@@ -14,6 +14,17 @@ Prototype web open source centré sur **iTowns** pour explorer les données IGN 
 
 L’interface ne présente pas les détails techniques du cache, des requêtes HTTP partielles ou du décodeur. Ces opérations sont automatiques.
 
+## Réutiliser une dalle téléchargée
+
+Le bloc repliable **Dalles déjà téléchargées** permet de travailler sans nouvelle recherche IGN :
+
+- la dalle `.copc.laz` la plus récente de `data/lidar` est sélectionnée automatiquement ;
+- **Afficher la dalle enregistrée** l’ouvre directement dans la vue native iTowns ;
+- **Choisir un fichier…** ouvre la boîte de dialogue Windows, copie le fichier choisi dans `data/lidar`, puis l’affiche ;
+- **Ouvrir le dossier** ouvre `data/lidar` dans l’Explorateur Windows.
+
+Seuls les fichiers `.copc.laz` sont acceptés, car iTowns doit pouvoir lire l’octree et les portions compressées du fichier.
+
 ## Architecture d’affichage
 
 Deux vues iTowns partagent le même espace visuel :
@@ -56,7 +67,7 @@ node web\scripts\copy-laz-perf.mjs
 Dans deux terminaux :
 
 ```powershell
-.\.venv\Scripts\python.exe -m uvicorn server.app:app --reload --port 8000
+.\.venv\Scripts\python.exe -m uvicorn server.main:app --reload --port 8000
 npm run dev --prefix web
 ```
 
@@ -84,12 +95,12 @@ VITE_API_URL=http://127.0.0.1:8000
 ## Structure
 
 ```text
-web/                 carte IGN et vue COPC native iTowns
+web/                 carte IGN, vue COPC native et sélection de fichiers locaux
 web/scripts/         préparation des ressources WebAssembly
-server/              proxy IGN, cache COPC et service Range HTTP
+server/              proxy IGN, cache COPC, import local et service Range HTTP
 tests/               tests de l’API locale
 configs/             catalogue logique des couches IGN
-data/                fichiers locaux ignorés par Git
+data/lidar/           dalles COPC locales, ignorées par Git
 scripts/windows/     installation et lancement Windows
 ```
 
