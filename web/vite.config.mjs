@@ -5,13 +5,13 @@ import { defineConfig } from 'vite';
 const webDirectory = dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
-  // iTowns construit son décodeur LAS avec une URL de worker relative à
-  // import.meta.url. L'optimiseur de dépendances Vite déplacerait le module
-  // dans node_modules/.vite et casserait cette URL au démarrage du worker.
-  // Le laisser servi comme module ESM permet à Vite de transformer et servir
-  // correctement lib/Worker/LASLoaderWorker.js.
-  optimizeDeps: {
-    exclude: ['itowns'],
+  // iTowns doit rester précompilé par Vite : son paquet publié contient des
+  // imports internes (Core/..., Layer/...) qui ne peuvent pas être servis bruts.
+  // Seul le LASLoader est ciblé par un alias pour construire notre worker local.
+  resolve: {
+    alias: {
+      '@itowns-las-loader': resolve(webDirectory, 'node_modules/itowns/lib/Loader/LASLoader.js'),
+    },
   },
   worker: {
     format: 'es',
