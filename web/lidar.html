@@ -3,14 +3,67 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Terrain 3D LiDAR IGN</title>
+    <title>Visionneuse 3D LiDAR IGN — iTowns</title>
   </head>
   <body>
     <div id="lidar-viewer"></div>
+
     <div id="lidar-toolbar">
       <button id="back-to-map" type="button">Revenir à la carte</button>
-      <div id="lidar-page-status" class="loading" aria-live="polite">Création du terrain 3D IGN…</div>
+      <div id="lidar-page-status" class="loading" aria-live="polite">Création de la visionneuse iTowns…</div>
     </div>
+
+    <aside id="lidar-controls" aria-label="Réglages de la visionneuse iTowns">
+      <header>
+        <div>
+          <strong>Visionneuse iTowns</strong>
+          <span>Terrain IGN + nuage LiDAR</span>
+        </div>
+        <button id="toggle-lidar-controls" type="button" aria-expanded="true" title="Replier les réglages">−</button>
+      </header>
+
+      <div id="lidar-controls-body">
+        <div class="viewer-actions">
+          <button id="view-3d" type="button">Vue 3D</button>
+          <button id="view-top" type="button">Vue du dessus</button>
+          <button id="view-fit" type="button">Recentrer</button>
+        </div>
+
+        <label class="control-row" for="lidar-render-mode">
+          <span>Rendu des points</span>
+          <select id="lidar-render-mode">
+            <option value="elevation" selected>Relief</option>
+            <option value="classification">Classification</option>
+            <option value="intensity">Intensité</option>
+            <option value="color">Couleurs source</option>
+          </select>
+        </label>
+
+        <label class="control-row" for="lidar-point-size">
+          <span>Taille des points <output id="lidar-point-size-value">1,5</output></span>
+          <input id="lidar-point-size" type="range" min="0.5" max="5" step="0.25" value="1.5" />
+        </label>
+
+        <label class="control-row" for="lidar-opacity">
+          <span>Opacité <output id="lidar-opacity-value">80 %</output></span>
+          <input id="lidar-opacity" type="range" min="0.1" max="1" step="0.05" value="0.8" />
+        </label>
+
+        <label class="control-row" for="lidar-point-budget">
+          <span>Densité <output id="lidar-point-budget-value">4,0 M</output></span>
+          <input id="lidar-point-budget" type="range" min="500000" max="6000000" step="250000" value="4000000" />
+        </label>
+
+        <div class="layer-switches">
+          <label><input id="lidar-visible" type="checkbox" checked /> LiDAR</label>
+          <label><input id="ortho-visible" type="checkbox" checked /> Orthophoto</label>
+          <label><input id="terrain-visible" type="checkbox" checked /> Relief MNT</label>
+        </div>
+
+        <div id="lidar-live-stats" aria-live="polite">Chargement du nuage…</div>
+      </div>
+    </aside>
+
     <script type="module" src="/src/lidar-bootstrap.ts"></script>
   </body>
 </html>
