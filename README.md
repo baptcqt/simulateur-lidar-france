@@ -1,45 +1,47 @@
 # Simulateur LiDAR France — prototype iTowns
 
-Prototype web open source centré sur **iTowns** pour explorer les données IGN en 2D/3D et construire progressivement un simulateur de drone fondé sur le LiDAR HD français.
+Prototype web open source centré sur **iTowns** pour explorer les données IGN en 2D/3D et construire progressivement un simulateur fondé sur le LiDAR HD français.
 
-## État actuel
-
-Le dépôt fournit un visualiseur IGN avec :
-
-- recherche d’adresse via la Géoplateforme ;
-- fonds Plan IGN et orthophoto IGN ;
-- navigation 2D verticale ou 3D légère ;
-- sélection rectangulaire d’une zone ;
-- recherche automatique de la dalle LiDAR correspondante ;
-- un seul bouton **Afficher le LiDAR** ;
-- téléchargement et cache local transparents ;
-- service HTTP local compatible avec les lectures partielles `Range` de COPC ;
-- vérification interne que des points sont réellement rendus dans iTowns.
-
-Ce n’est pas encore un simulateur de drone. Le jalon actuel consiste à obtenir un affichage COPC simple et fiable avant d’ajouter le MNT, les filtres et la reconstruction.
-
-## Parcours LiDAR
+## Parcours actuel
 
 1. Rechercher une commune ou une adresse.
-2. Cliquer sur **Sélectionner une zone** et tracer un petit rectangle.
-3. Attendre l’indication **Dalle LiDAR trouvée**.
+2. Sélectionner une petite zone sur la carte IGN.
+3. L’application recherche automatiquement la dalle COPC correspondant au centre de la sélection.
 4. Cliquer sur **Afficher le LiDAR**.
+5. Le fichier est téléchargé ou repris depuis le cache local.
+6. Une vue COPC native iTowns remplace temporairement la carte et cadre automatiquement le nuage de points.
+7. Cliquer sur **Revenir à la carte** pour retrouver exactement la carte et la position précédentes.
 
-L’application choisit automatiquement la dalle COPC contenant le centre de la sélection. Le téléchargement local et les vérifications techniques restent masqués dans l’interface.
+L’interface ne présente pas les détails techniques du cache, des requêtes HTTP partielles ou du décodeur. Ces opérations sont automatiques.
 
-Les dalles LAZ non-COPC sont détectées mais ne sont pas encore affichées. Elles devront être converties en COPC avant leur utilisation dans iTowns.
+## Architecture d’affichage
+
+Deux vues iTowns partagent le même espace visuel :
+
+- une `GlobeView` conserve la carte IGN, la recherche et la sélection ;
+- une `View` avec `PlanarControls` et `CopcLayer` ouvre le fichier COPC dans son système de coordonnées natif.
+
+Les points LAZ sont décompressés dans le navigateur avec **laz-perf WebAssembly**. Le fichier `laz-perf.wasm` est copié dans `web/public/laz-perf` pendant l’installation et servi localement. Le rendu LiDAR ne dépend donc plus d’un CDN externe.
 
 ## Installation Windows 11
 
-Prérequis : Git, Node.js 20+, Python 3.11+.
+Prérequis : Git, Node.js 20+ et Python 3.11+.
 
 ```powershell
+git clone <URL_DU_DEPOT>
+cd simulateur-lidar-france
 Set-ExecutionPolicy -Scope Process Bypass
 .\scripts\windows\install.ps1
 .\scripts\windows\run.ps1
 ```
 
-Le lanceur arrête les anciennes instances du projet sur les ports 5173 et 8000, attend que les deux services soient prêts, puis ouvre la version courante dans le navigateur.
+Le lanceur :
+
+- vérifie les dépendances ;
+- prépare le décodeur LiDAR local ;
+- ferme les anciennes instances qui occupent les ports 8000 et 5173 ;
+- démarre l’API et Vite ;
+- attend que l’API, l’interface et le fichier WASM répondent avant d’ouvrir le navigateur.
 
 ## Installation manuelle
 
@@ -48,6 +50,7 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r server\requirements.txt
 npm install --prefix web
+node web\scripts\copy-laz-perf.mjs
 ```
 
 Dans deux terminaux :
@@ -78,12 +81,13 @@ VITE_IGN_TOPO_LAYER=GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2
 VITE_API_URL=http://127.0.0.1:8000
 ```
 
-## Architecture
+## Structure
 
 ```text
-web/                 interface cartographique et chargement COPC iTowns
-server/              proxy IGN, téléchargements asynchrones et fichiers Range HTTP
-tests/               tests de l’API locale et du service de fichiers
+web/                 carte IGN et vue COPC native iTowns
+web/scripts/         préparation des ressources WebAssembly
+server/              proxy IGN, cache COPC et service Range HTTP
+tests/               tests de l’API locale
 configs/             catalogue logique des couches IGN
 data/                fichiers locaux ignorés par Git
 scripts/windows/     installation et lancement Windows
@@ -91,14 +95,13 @@ scripts/windows/     installation et lancement Windows
 
 ## Roadmap
 
-1. Affichage COPC simple et fiable.
-2. Ajout du MNT / terrain IGN réel.
-3. Filtres LiDAR : classes, altitude, densité et taille des points.
-4. Réintégration du pipeline de reconstruction et des exports GLB/Godot.
-5. Caméra type drone et manette.
-6. Reconstruction bâtiments et arbres.
-7. Physique simplifiée et collisions.
-8. Passerelle PX4/MAVLink.
+1. Valider l’affichage COPC natif sur les dalles IGN.
+2. Ajouter le MNT / terrain IGN réel.
+3. Ajouter les filtres LiDAR : classes, altitude, densité et taille des points.
+4. Réintégrer le pipeline de reconstruction et les exports GLB/Godot.
+5. Ajouter une caméra type drone et la manette.
+6. Ajouter les bâtiments, arbres, collisions et physique simplifiée.
+7. Ajouter une passerelle PX4/MAVLink.
 
 ## Limites
 
