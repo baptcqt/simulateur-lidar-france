@@ -15,7 +15,6 @@ app.innerHTML = `
     <button id="go">Aller à la position</button>
     <hr>
     <label><input id="ortho" type="checkbox" checked> Orthophoto IGN</label>
-    <label><input id="controls" type="checkbox" checked> Contrôles caméra</label>
     <p class="hint">Souris : rotation et zoom. Les couches LiDAR, CoSIA et MNT seront ajoutées comme modules séparés.</p>
     <div id="status">Initialisation…</div>
   </aside>
@@ -68,7 +67,13 @@ document.querySelector<HTMLButtonElement>('#go')?.addEventListener('click', () =
   const lat = Number(document.querySelector<HTMLInputElement>('#lat')?.value ?? 48.8566);
   const range = Number(document.querySelector<HTMLInputElement>('#alt')?.value ?? 1500);
 
-  void view.controls.lookAtCoordinate({
+  const controls = view.controls;
+  if (!controls) {
+    if (status) status.textContent = 'Contrôles caméra indisponibles.';
+    return;
+  }
+
+  void controls.lookAtCoordinate({
     coord: new itowns.Coordinates('EPSG:4326', lon, lat),
     range,
     tilt: 35,
@@ -82,8 +87,4 @@ document.querySelector<HTMLInputElement>('#ortho')?.addEventListener('change', (
   const layer = view.getLayerById('ign-ortho');
   if (layer) layer.visible = visible;
   view.notifyChange();
-});
-
-document.querySelector<HTMLInputElement>('#controls')?.addEventListener('change', (event) => {
-  view.controls.enabled = (event.target as HTMLInputElement).checked;
 });
