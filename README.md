@@ -4,29 +4,63 @@ Prototype web open source centré sur **iTowns** pour explorer les données IGN 
 
 ## État actuel
 
-Le dépôt contient maintenant un premier visualiseur IGN stable :
+Le dépôt contient maintenant un premier visualiseur IGN avec un début de mode iTowns avancé :
 
 - recherche d'adresse via le service de géocodage de la Géoplateforme ;
 - déplacement automatique de la caméra vers le premier résultat ;
 - démarrage en **BD topo / Plan IGN**, en vue 2D verticale ;
-- choix entre trois fonds : **BD topo / Plan IGN**, **Satellite IGN** et **fond neutre iTowns** ;
+- choix entre **BD topo / Plan IGN**, **Satellite IGN** et **Vue iTowns avancée** ;
 - bascule d'angle entre **2D verticale du dessus** et **3D légère** ;
 - une seule couche WMTS active à la fois pour limiter la charge réseau/GPU ;
-- serveur FastAPI local qui sert de proxy de géocodage et préparera le cache ;
+- mode iTowns avancé avec sélection rectangulaire d'emprise ;
+- recherche des dalles **LiDAR HD IGN** qui intersectent l'emprise sélectionnée via WFS ;
+- chargement expérimental d'une dalle **COPC LAZ** par URL dans `CopcSource` + `CopcLayer` ;
+- serveur FastAPI local qui sert de proxy de géocodage, de recherche LiDAR et préparera le cache ;
 - aucune donnée OpenStreetMap.
 
-Le bouton **fond neutre iTowns** ne charge ni image IGN ni LiDAR. iTowns est le moteur de rendu ; le LiDAR HD sera une couche séparée à ajouter dans une étape suivante.
-
 Ce n'est pas encore un simulateur de drone. C'est le socle de visualisation sur lequel ajouter le MNT, le LiDAR HD, les filtres et la caméra drone.
+
+## Vue iTowns avancée
+
+La vue iTowns avancée n'est plus un fond vide. Elle utilise le moteur iTowns avec les briques natives suivantes :
+
+```text
+GlobeView
+ColorLayer / WMTSSource
+CopcSource
+CopcLayer
+PointCloudLayer
+sélection d'emprise côté navigateur
+proxy WFS côté serveur
+```
+
+Flux prévu :
+
+```text
+sélection rectangle sur la carte
+        ↓
+conversion en bbox EPSG:4326
+        ↓
+requête WFS Géoplateforme sur IGNF_NUAGES-DE-POINTS-LIDAR-HD:dalle
+        ↓
+liste des dalles disponibles
+        ↓
+chargement expérimental d'une URL COPC dans iTowns
+```
+
+Les dalles LiDAR HD peuvent être lourdes. Le chargement automatique complet sera ajouté progressivement avec garde-fous de taille, cache local et annulation.
 
 ## Objectif du MVP
 
 - ouvrir une zone en France depuis une adresse ou des coordonnées ;
 - afficher un globe/terrain iTowns ;
-- basculer entre Plan IGN, orthophoto IGN et fond neutre ;
-- préparer l'ajout du MNT, du LiDAR HD et de CoSIA ;
+- basculer entre Plan IGN, orthophoto IGN et vue iTowns avancée ;
+- sélectionner une emprise rectangulaire ;
+- retrouver les dalles LiDAR HD IGN associées ;
+- charger une dalle COPC dans iTowns ;
+- préparer l'ajout du MNT, des filtres de classification LiDAR et de CoSIA ;
 - naviguer avec une caméra libre ;
-- exposer un petit serveur local pour le cache, les fichiers locaux et les futurs traitements PDAL.
+- exposer un serveur local pour le cache, les fichiers locaux et les futurs traitements PDAL.
 
 ## Installation Windows 11
 
@@ -72,8 +106,8 @@ npm run dev --prefix web
 ## Architecture
 
 ```text
-web/                 interface iTowns, vues de base et recherche
-server/              API locale, proxy géocodage, cache et fichiers de données
+web/                 interface iTowns, vues, sélection LiDAR et COPC expérimental
+server/              API locale, proxy géocodage, proxy WFS LiDAR, cache et fichiers
 configs/             catalogue logique des couches IGN
 data/                fichiers locaux ignorés par Git
 scripts/windows/     installation et lancement Surface Pro 9
@@ -81,14 +115,15 @@ scripts/windows/     installation et lancement Surface Pro 9
 
 ## Roadmap
 
-1. Recherche adresse + vues Plan IGN / Satellite / fond neutre.
-2. Stabilisation navigation 2D/3D et gestion des erreurs de tuiles.
-3. Ajout MNT / terrain IGN réel.
-4. Chargement LiDAR HD COPC/Entwine et filtres LiDAR.
-5. Caméra type drone et manette.
-6. Reconstruction bâtiments/arbres.
-7. Physique simplifiée.
-8. Passerelle PX4/MAVLink.
+1. Recherche adresse + vues Plan IGN / Satellite / iTowns avancée.
+2. Sélection rectangle + recherche WFS des dalles LiDAR.
+3. Chargement COPC fiable, cache local, annulation et limites de taille.
+4. Ajout MNT / terrain IGN réel.
+5. Filtres LiDAR par classe, altitude, densité et taille des points.
+6. Caméra type drone et manette.
+7. Reconstruction bâtiments/arbres.
+8. Physique simplifiée.
+9. Passerelle PX4/MAVLink.
 
 ## Limites
 
