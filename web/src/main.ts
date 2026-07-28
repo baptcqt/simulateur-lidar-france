@@ -1,7 +1,7 @@
 import * as itowns from 'itowns';
 import './style.css';
 
-type BaseMode = 'topo' | 'satellite' | 'alternate';
+type BaseMode = 'topo' | 'satellite' | 'neutral';
 type CameraMode = 'flat' | 'oblique';
 
 type GeocodeFeature = {
@@ -52,7 +52,13 @@ app.innerHTML = `
       <h2>Fond de carte</h2>
       <label><input name="base-mode" type="radio" value="topo" checked> BD topo / Plan IGN</label>
       <label><input name="base-mode" type="radio" value="satellite"> Satellite IGN</label>
-      <label><input name="base-mode" type="radio" value="alternate"> Alternate iTowns</label>
+      <label><input name="base-mode" type="radio" value="neutral"> Fond neutre iTowns</label>
+    </section>
+
+    <section class="block">
+      <h2>Données LiDAR</h2>
+      <label class="disabled"><input type="checkbox" disabled> LiDAR HD IGN non connecté</label>
+      <p class="hint">Le moteur iTowns est prêt à afficher du 3D, mais aucune couche LiDAR/COPC n’est encore branchée dans ce prototype.</p>
     </section>
 
     <section class="block">
@@ -62,7 +68,7 @@ app.innerHTML = `
       <button id="reset-flat" type="button">Revenir en vue 2D verticale</button>
     </section>
 
-    <p class="hint">La vue 2D utilise une caméra verticale. La 3D légère garde un angle modéré pour éviter la vue rasante et limiter le chargement de tuiles à l’horizon.</p>
+    <p class="hint">BD topo et Satellite sont des couches image IGN. Le fond neutre est uniquement une vue iTowns sans image IGN et sans LiDAR.</p>
     <div id="status">Initialisation…</div>
   </aside>
   <main id="viewer"></main>
@@ -175,7 +181,7 @@ async function setBaseMode(mode: BaseMode): Promise<void> {
 
   const config = layerConfig(mode);
   if (!config) {
-    setStatus('Vue alternate iTowns active : aucune image IGN n’est chargée.');
+    setStatus('Fond neutre iTowns actif : aucune couche image IGN ni LiDAR n’est chargée.');
     notifyView();
     return;
   }
