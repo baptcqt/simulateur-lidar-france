@@ -2,7 +2,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const webDirectory = path.resolve(scriptDirectory, '..');
@@ -58,6 +58,20 @@ itownsRequire.resolve('threads');
 const lasWorker = path.join(packages.itowns.root, 'lib', 'Worker', 'LASLoaderWorker.js');
 if (!existsSync(lasWorker)) throw new Error(`Worker LAS iTowns introuvable : ${lasWorker}`);
 
+const workerSource = await readFile(lasWorker, 'utf8');
+if (!workerSource.includes('expose(')) {
+  throw new Error(`Le worker LAS iTowns ne publie pas son API threads : ${lasWorker}`);
+}
+
+const viteConfigPath = path.join(webDirectory, 'vite.config.mjs');
+const viteConfig = (await import(`${pathToFileURL(viteConfigPath).href}?audit=${Date.now()}`)).default;
+if (!viteConfig.optimizeDeps?.exclude?.includes('itowns')) {
+  throw new Error("Vite doit exclure 'itowns' de optimizeDeps pour préserver l'URL relative du worker LAS");
+}
+if (viteConfig.worker?.format !== 'es') {
+  throw new Error("Le format des workers Vite doit être 'es'");
+}
+
 const sourceWasm = path.join(packages.lazPerf.root, 'lib', 'laz-perf.wasm');
 const publicWasm = path.join(webDirectory, 'public', 'laz-perf', 'laz-perf.wasm');
 await assertWasm(sourceWasm);
@@ -68,5 +82,7 @@ console.log(`- iTowns ${packages.itowns.metadata.version}`);
 console.log(`- Three.js ${packages.three.metadata.version}`);
 console.log(`- proj4 ${packages.proj4.metadata.version}`);
 console.log(`- laz-perf ${packages.lazPerf.metadata.version}`);
-console.log('- worker LAS iTowns présent');
+console.log('- worker LAS iTowns présent et expose() détecté');
+console.log('- iTowns exclu de l’optimiseur Vite pour préserver son worker');
+console.log('- workers Vite générés au format ES module');
 console.log('- WebAssembly laz-perf valide et servi localement');
