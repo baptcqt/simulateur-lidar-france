@@ -1,7 +1,7 @@
 import * as itowns from 'itowns';
 import './style.css';
 
-type BaseMode = 'satellite' | 'topo' | 'itowns';
+type BaseMode = 'topo' | 'satellite' | 'alternate';
 type CameraMode = 'flat' | 'oblique';
 
 type GeocodeFeature = {
@@ -35,7 +35,7 @@ app.innerHTML = `
     <form id="address-form" class="block">
       <label for="address">Recherche d’adresse</label>
       <div class="row">
-        <input id="address" type="search" placeholder="Ex. 8 avenue des Champs-Élysées, Paris" autocomplete="street-address">
+        <input id="address" type="search" placeholder="Ex. Cléden-Cap-Sizun" autocomplete="street-address">
         <button type="submit">Rechercher</button>
       </div>
       <div id="search-results" class="results" aria-live="polite"></div>
@@ -50,19 +50,19 @@ app.innerHTML = `
 
     <section class="block">
       <h2>Fond de carte</h2>
-      <label><input name="base-mode" type="radio" value="satellite" checked> Satellite IGN</label>
-      <label><input name="base-mode" type="radio" value="topo"> Plan IGN / topo</label>
-      <label><input name="base-mode" type="radio" value="itowns"> iTowns neutre</label>
+      <label><input name="base-mode" type="radio" value="topo" checked> BD topo / Plan IGN</label>
+      <label><input name="base-mode" type="radio" value="satellite"> Satellite IGN</label>
+      <label><input name="base-mode" type="radio" value="alternate"> Alternate iTowns</label>
     </section>
 
     <section class="block">
       <h2>Angle de vue</h2>
-      <label><input name="camera-mode" type="radio" value="flat" checked> 2D du dessus</label>
+      <label><input name="camera-mode" type="radio" value="flat" checked> 2D verticale du dessus</label>
       <label><input name="camera-mode" type="radio" value="oblique"> 3D légère</label>
-      <button id="reset-flat" type="button">Revenir en vue plane</button>
+      <button id="reset-flat" type="button">Revenir en vue 2D verticale</button>
     </section>
 
-    <p class="hint">Démarrage volontairement en satellite 2D pour limiter la charge GPU. La 3D légère garde un angle faible pour éviter de charger trop de tuiles à l’horizon.</p>
+    <p class="hint">La vue 2D utilise une caméra verticale. La 3D légère garde un angle modéré pour éviter la vue rasante et limiter le chargement de tuiles à l’horizon.</p>
     <div id="status">Initialisation…</div>
   </aside>
   <main id="viewer"></main>
@@ -88,8 +88,11 @@ const apiUrl = ((import.meta.env.VITE_API_URL as string | undefined) ?? 'http://
 const DEFAULT_LON = 2.3522;
 const DEFAULT_LAT = 48.8566;
 const DEFAULT_RANGE = 2500;
-const FLAT_TILT = 0;
-const OBLIQUE_TILT = 18;
+
+// Dans iTowns, un tilt proche de 90° correspond à une caméra verticale.
+// Un tilt proche de 0° donne une vue rasante avec horizon visible.
+const FLAT_TILT = 89;
+const OBLIQUE_TILT = 62;
 
 const placement = {
   coord: new itowns.Coordinates('EPSG:4326', DEFAULT_LON, DEFAULT_LAT),
@@ -99,7 +102,7 @@ const placement = {
 };
 
 const view = new itowns.GlobeView(viewerDiv, placement);
-let activeBaseMode: BaseMode = 'satellite';
+let activeBaseMode: BaseMode = 'topo';
 let activeLayerId: string | null = null;
 let cameraMode: CameraMode = 'flat';
 let layerSwitchSequence = 0;
@@ -138,11 +141,11 @@ function createWmtsLayer(id: string, layerName: string, format: string): any {
 }
 
 function layerConfig(mode: BaseMode): { label: string; layerName: string; format: string } | null {
+  if (mode === 'topo') {
+    return { label: 'BD topo / Plan IGN', layerName: topoLayerName, format: 'image/png' };
+  }
   if (mode === 'satellite') {
     return { label: 'Satellite IGN', layerName: satelliteLayerName, format: 'image/jpeg' };
-  }
-  if (mode === 'topo') {
-    return { label: 'Plan IGN / topo', layerName: topoLayerName, format: 'image/png' };
   }
   return null;
 }
@@ -172,7 +175,7 @@ async function setBaseMode(mode: BaseMode): Promise<void> {
 
   const config = layerConfig(mode);
   if (!config) {
-    setStatus('Vue iTowns neutre active : aucune couche image n’est chargée.');
+    setStatus('Vue alternate iTowns active : aucune image IGN n’est chargée.');
     notifyView();
     return;
   }
@@ -184,7 +187,7 @@ async function setBaseMode(mode: BaseMode): Promise<void> {
   await view.addLayer(layer);
   if (switchId !== layerSwitchSequence) return;
 
-  setStatus(`${config.label} actif en ${cameraMode === 'flat' ? 'vue 2D' : 'vue 3D légère'}.`);
+  setStatus(`${config.label} actif en ${cameraMode === 'flat' ? 'vue 2D verticale' : 'vue 3D légère'}.`);
   notifyView();
 }
 
@@ -218,7 +221,7 @@ function applyCamera(lon: number, lat: number, label?: string): void {
 function setCameraMode(mode: CameraMode): void {
   cameraMode = mode;
   const { lon, lat } = currentPosition();
-  applyCamera(lon, lat, mode === 'flat' ? 'vue 2D du dessus' : 'vue 3D légère');
+  applyCamera(lon, lat, mode === 'flat' ? 'vue 2D verticale du dessus' : 'vue 3D légère');
 }
 
 function renderSearchResults(features: GeocodeFeature[]): void {
@@ -284,7 +287,7 @@ window.addEventListener('unhandledrejection', (event) => {
   setStatus(`Erreur carte : ${String(event.reason)}`);
 });
 
-void setBaseMode('satellite').then(() => {
+void setBaseMode('topo').then(() => {
   setCameraMode('flat');
 }).catch((error: unknown) => {
   console.error(error);
@@ -310,7 +313,7 @@ document.querySelector<HTMLButtonElement>('#reset-flat')?.addEventListener('clic
   const flatInput = document.querySelector<HTMLInputElement>('input[name="camera-mode"][value="flat"]');
   if (flatInput) flatInput.checked = true;
   const { lon, lat } = currentPosition();
-  applyCamera(lon, lat, 'vue 2D du dessus');
+  applyCamera(lon, lat, 'vue 2D verticale du dessus');
 });
 
 document.querySelectorAll<HTMLInputElement>('input[name="base-mode"]').forEach((input) => {
