@@ -9,7 +9,8 @@ from urllib.parse import unquote
 
 from fastapi import APIRouter, Header, HTTPException, Request, status
 
-from server.app import LIDAR_DIR
+ROOT = Path(__file__).resolve().parents[1]
+LIDAR_DIR = ROOT / "data" / "lidar"
 
 router = APIRouter(prefix="/local-lidar", tags=["local-lidar"])
 LOCAL_FILENAME_RE = re.compile(r"[^A-Za-z0-9_. -]")
