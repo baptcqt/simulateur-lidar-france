@@ -51,6 +51,16 @@ function Wait-ForUrl {
     throw "$Name n’a pas démarré correctement. Consultez la fenêtre PowerShell correspondante."
 }
 
+$LazPerfSource = Join-Path $Root 'web\node_modules\laz-perf\lib\laz-perf.wasm'
+if (-not (Test-Path $LazPerfSource)) {
+    Write-Host 'Installation de la dépendance locale de décompression LiDAR...'
+    & npm install --prefix web
+    if ($LASTEXITCODE -ne 0) { throw 'L’installation des dépendances web a échoué.' }
+}
+
+& node (Join-Path $Root 'web\scripts\copy-laz-perf.mjs')
+if ($LASTEXITCODE -ne 0) { throw 'La préparation du décodeur LiDAR a échoué.' }
+
 Stop-ProjectListener -Port 8000
 Stop-ProjectListener -Port 5173
 Start-Sleep -Milliseconds 700
@@ -62,6 +72,7 @@ Start-Process powershell -ArgumentList @('-NoExit', '-NoProfile', '-Command', $A
 Start-Process powershell -ArgumentList @('-NoExit', '-NoProfile', '-Command', $WebCommand)
 
 Wait-ForUrl -Url 'http://127.0.0.1:8000/health' -Name 'API LiDAR'
+Wait-ForUrl -Url 'http://127.0.0.1:5173/laz-perf/laz-perf.wasm' -Name 'Décodeur LiDAR local'
 Wait-ForUrl -Url 'http://127.0.0.1:5173' -Name 'Interface iTowns'
 
 Start-Process 'http://127.0.0.1:5173'
