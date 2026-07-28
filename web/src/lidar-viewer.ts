@@ -1,25 +1,69 @@
 import * as THREE from 'three';
 import * as itowns from 'itowns';
+import { Navigation, Scale } from 'itowns/widgets';
 import './lidar-viewer.css';
 
-const viewer = document.querySelector<HTMLDivElement>('#lidar-viewer');
-const status = document.querySelector<HTMLDivElement>('#lidar-page-status');
-const backButton = document.querySelector<HTMLButtonElement>('#back-to-map');
+const viewer = requireElement<HTMLDivElement>('#lidar-viewer');
+const status = requireElement<HTMLDivElement>('#lidar-page-status');
+const backButton = requireElement<HTMLButtonElement>('#back-to-map');
+const controlPanel = requireElement<HTMLElement>('#lidar-controls');
+const controlPanelBody = requireElement<HTMLDivElement>('#lidar-controls-body');
+const toggleControlsButton = requireElement<HTMLButtonElement>('#toggle-lidar-controls');
+const view3DButton = requireElement<HTMLButtonElement>('#view-3d');
+const viewTopButton = requireElement<HTMLButtonElement>('#view-top');
+const viewFitButton = requireElement<HTMLButtonElement>('#view-fit');
+const renderModeSelect = requireElement<HTMLSelectElement>('#lidar-render-mode');
+const pointSizeInput = requireElement<HTMLInputElement>('#lidar-point-size');
+const pointSizeValue = requireElement<HTMLOutputElement>('#lidar-point-size-value');
+const opacityInput = requireElement<HTMLInputElement>('#lidar-opacity');
+const opacityValue = requireElement<HTMLOutputElement>('#lidar-opacity-value');
+const pointBudgetInput = requireElement<HTMLInputElement>('#lidar-point-budget');
+const pointBudgetValue = requireElement<HTMLOutputElement>('#lidar-point-budget-value');
+const lidarVisibleInput = requireElement<HTMLInputElement>('#lidar-visible');
+const orthoVisibleInput = requireElement<HTMLInputElement>('#ortho-visible');
+const terrainVisibleInput = requireElement<HTMLInputElement>('#terrain-visible');
+const liveStats = requireElement<HTMLDivElement>('#lidar-live-stats');
 
-if (!viewer || !status || !backButton) {
-  throw new Error('La page LiDAR est incomplète.');
-}
-
-const LAMBERT_93 = '+proj=lcc +lat_1=49 +lat_2=44 +lat_0=46.5 +lon_0=3 +x_0=700000 +y_0=6600000 +ellps=GRS80 +units=m +no_defs';
+const LAMBERT_93 = '+proj=lcc +lat_1=49 +lat_2=44 +lat_0=46.5 +lon_0=3 +x_0=700000 +y_0=6600000 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs +type=crs';
 const WMTS_URL = (import.meta.env.VITE_IGN_WMTS_URL as string | undefined) ?? 'https://data.geopf.fr/wmts';
 const ORTHO_LAYER = (import.meta.env.VITE_IGN_ORTHO_LAYER as string | undefined) ?? 'ORTHOIMAGERY.ORTHOPHOTOS';
-const POINT_TIMEOUT_MS = 8_000;
+const POINT_TIMEOUT_MS = 10_000;
 const ROOT_LOAD_TIMEOUT_MS = 60_000;
+const DEFAULT_POINT_SIZE = 1.5;
+const DEFAULT_OPACITY = 0.8;
+const DEFAULT_POINT_BUDGET = 4_000_000;
+
+const RENDER_MODES: Record<string, number> = {
+  color: itowns.PNTS_MODE.COLOR,
+  intensity: itowns.PNTS_MODE.INTENSITY,
+  classification: itowns.PNTS_MODE.CLASSIFICATION,
+  elevation: itowns.PNTS_MODE.ELEVATION,
+};
 
 type PageState = 'loading' | 'success' | 'error';
 type PointStats = { points: number; nodes: number };
-type CopcFrame = { center: any; range: number };
+type CopcFrame = {
+  center: any;
+  range3D: number;
+  rangeTop: number;
+};
 type AdaptedCopcNode = any & { nativeBbox?: THREE.Box3 };
+type ViewerContext = {
+  view: any;
+  layer: any;
+  orthoLayer: any;
+  terrainLayer: any;
+  frame: CopcFrame;
+};
+
+let context: ViewerContext | null = null;
+let statsTimer: number | undefined;
+
+function requireElement<T extends Element>(selector: string): T {
+  const element = document.querySelector<T>(selector);
+  if (!element) throw new Error(`Élément ${selector} introuvable.`);
+  return element;
+}
 
 function setStatus(state: PageState, message: string): void {
   status.className = state;
@@ -99,9 +143,14 @@ function frameFromCopc(source: any): CopcFrame {
   const centerZ = (cube[2] + cube[5]) / 2;
   const width = Math.abs(cube[3] - cube[0]);
   const height = Math.abs(cube[4] - cube[1]);
+  const diagonal = Math.max(1, Math.hypot(width, height));
   const center = new itowns.Coordinates(source.crs, centerX, centerY, centerZ).as('EPSG:4326');
-  const range = Math.max(1_200, Math.hypot(width, height) * 1.15);
-  return { center, range };
+
+  return {
+    center,
+    range3D: Math.max(450, diagonal * 0.58),
+    rangeTop: Math.max(900, diagonal * 1.05),
+  };
 }
 
 function createOrthoLayer(): any {
@@ -191,9 +240,6 @@ function adaptCopcNodeToGlobe(
   node.nativeBbox = nativeBox;
   node.bbox.copy(projectBox3(nativeBox, sourceCrs, targetCrs));
 
-  // iTowns 2.46 calcule les enfants à partir de bbox. Après projection globe,
-  // cette bbox est géocentrique : on conserve donc séparément le cube Lambert
-  // pour les subdivisions et on projette chaque enfant vers le CRS de la vue.
   node.createChildAABB = (child: AdaptedCopcNode) => {
     adaptCopcNodeToGlobe(child, node, sourceCrs, targetCrs);
   };
@@ -223,6 +269,14 @@ function countPoints(layer: any): PointStats {
     nodes += 1;
   });
   return { points, nodes };
+}
+
+function hasPointColors(layer: any): boolean {
+  let found = false;
+  layer.group?.traverse((object: any) => {
+    if (object.isPoints && object.geometry?.getAttribute('color')) found = true;
+  });
+  return found;
 }
 
 function attachRootPoints(view: any, layer: any, root: any, points: THREE.Points): PointStats {
@@ -278,6 +332,126 @@ async function waitForPoints(view: any, layer: any, getLoadError: () => Error | 
   return loadRootExplicitly(view, layer);
 }
 
+function formatPointBudget(value: number): string {
+  return `${(value / 1_000_000).toLocaleString('fr-FR', { minimumFractionDigits: 1, maximumFractionDigits: 2 })} M`;
+}
+
+function updateControlLabels(): void {
+  pointSizeValue.value = Number(pointSizeInput.value).toLocaleString('fr-FR', { maximumFractionDigits: 2 });
+  opacityValue.value = `${Math.round(Number(opacityInput.value) * 100)} %`;
+  pointBudgetValue.value = formatPointBudget(Number(pointBudgetInput.value));
+}
+
+function setPointRenderingMode(modeName: string): void {
+  if (!context) return;
+  const mode = RENDER_MODES[modeName];
+  if (mode === undefined) return;
+
+  context.layer.mode = mode;
+  context.layer.material.mode = mode;
+  context.layer.material.needsUpdate = true;
+  context.view.notifyChange(context.layer);
+}
+
+function applyPointStyle(): void {
+  if (!context) return;
+  const pointSize = Number(pointSizeInput.value);
+  const opacity = Number(opacityInput.value);
+  const pointBudget = Number(pointBudgetInput.value);
+
+  context.layer.pointSize = pointSize;
+  context.layer.opacity = opacity;
+  context.layer.pointBudget = pointBudget;
+  context.layer.material.opacity = opacity;
+  context.layer.material.depthTest = true;
+  context.layer.material.depthWrite = false;
+  context.layer.material.transparent = opacity < 1;
+  context.layer.material.needsUpdate = true;
+  context.view.notifyChange(context.layer);
+  updateControlLabels();
+}
+
+async function setCamera(mode: '3d' | 'top'): Promise<void> {
+  if (!context) return;
+  const { view, frame } = context;
+  await view.controls.lookAtCoordinate({
+    coord: frame.center,
+    range: mode === '3d' ? frame.range3D : frame.rangeTop,
+    tilt: mode === '3d' ? 32 : 89.5,
+    heading: mode === '3d' ? 28 : 0,
+    time: 650,
+  });
+  view.notifyChange(view.camera3D);
+}
+
+function installITownsWidgets(view: any): void {
+  const navigation = new Navigation(view, {
+    position: 'bottom-right',
+    direction: 'column',
+    animationDuration: 450,
+  });
+  if (navigation.compass) navigation.compass.title = 'Orienter vers le nord';
+  if (navigation.toggle3D) navigation.toggle3D.title = 'Basculer entre vue 2D et 3D';
+  if (navigation.zoomIn) navigation.zoomIn.title = 'Zoomer';
+  if (navigation.zoomOut) navigation.zoomOut.title = 'Dézoomer';
+
+  const scale = new Scale(view, {
+    position: 'bottom-left',
+    width: 160,
+  });
+  window.setTimeout(() => scale.update(), 300);
+}
+
+function updateLiveStats(): void {
+  if (!context) return;
+  const stats = countPoints(context.layer);
+  const budget = Number(context.layer.pointBudget ?? DEFAULT_POINT_BUDGET);
+  liveStats.textContent = stats.points > 0
+    ? `${stats.points.toLocaleString('fr-FR')} points visibles · ${stats.nodes.toLocaleString('fr-FR')} blocs · budget ${formatPointBudget(budget)}`
+    : 'iTowns charge les blocs LiDAR visibles…';
+}
+
+function startLiveStats(): void {
+  if (statsTimer !== undefined) window.clearInterval(statsTimer);
+  updateLiveStats();
+  statsTimer = window.setInterval(updateLiveStats, 500);
+}
+
+function bindViewerControls(): void {
+  renderModeSelect.addEventListener('change', () => setPointRenderingMode(renderModeSelect.value));
+  pointSizeInput.addEventListener('input', applyPointStyle);
+  opacityInput.addEventListener('input', applyPointStyle);
+  pointBudgetInput.addEventListener('input', applyPointStyle);
+
+  lidarVisibleInput.addEventListener('change', () => {
+    if (!context) return;
+    context.layer.visible = lidarVisibleInput.checked;
+    context.view.notifyChange(context.layer);
+  });
+  orthoVisibleInput.addEventListener('change', () => {
+    if (!context) return;
+    context.orthoLayer.visible = orthoVisibleInput.checked;
+    context.view.notifyChange(context.orthoLayer);
+  });
+  terrainVisibleInput.addEventListener('change', () => {
+    if (!context) return;
+    context.terrainLayer.visible = terrainVisibleInput.checked;
+    context.view.notifyChange(context.terrainLayer);
+  });
+
+  view3DButton.addEventListener('click', () => void setCamera('3d'));
+  viewTopButton.addEventListener('click', () => void setCamera('top'));
+  viewFitButton.addEventListener('click', () => void setCamera('3d'));
+
+  toggleControlsButton.addEventListener('click', () => {
+    const collapsed = controlPanel.classList.toggle('collapsed');
+    controlPanelBody.hidden = collapsed;
+    toggleControlsButton.textContent = collapsed ? '+' : '−';
+    toggleControlsButton.setAttribute('aria-expanded', String(!collapsed));
+    toggleControlsButton.title = collapsed ? 'Afficher les réglages' : 'Replier les réglages';
+  });
+}
+
 async function openCopc(): Promise<void> {
   const params = new URL(window.location.href).searchParams;
   const url = params.get('copc');
@@ -295,60 +469,78 @@ async function openCopc(): Promise<void> {
   normalizeSourceCrs(source, parsedUrl.toString(), label);
   const frame = frameFromCopc(source);
 
-  setStatus('loading', `Création du terrain IGN${fileSize ? ` — ${(fileSize / 1024 / 1024).toFixed(1)} Mo` : ''}…`);
+  setStatus('loading', `Création de la GlobeView iTowns${fileSize ? ` — ${(fileSize / 1024 / 1024).toFixed(1)} Mo` : ''}…`);
   const view = new itowns.GlobeView(viewer, {
     coord: frame.center,
-    range: frame.range,
-    tilt: 55,
+    range: frame.rangeTop,
+    tilt: 89.5,
     heading: 0,
   }, {
     realisticLighting: false,
   });
 
   view.mainLoop.gfxEngine.renderer.setClearColor(0x9bb7cc);
+  const orthoLayer = createOrthoLayer();
+  const terrainLayer = createElevationLayer();
   await Promise.all([
-    view.addLayer(createOrthoLayer()),
-    view.addLayer(createElevationLayer()),
+    view.addLayer(orthoLayer),
+    view.addLayer(terrainLayer),
   ]);
 
   let workerError: Error | null = null;
+  const defaultMode = itowns.PNTS_MODE.CLASSIFICATION;
   const layer = new itowns.CopcLayer('COPC', {
     source,
     crs: view.referenceCrs,
-    sseThreshold: 1.5,
-    pointBudget: 3_000_000,
-    pointSize: 3,
-    mode: itowns.PNTS_MODE.CLASSIFICATION,
-    opacity: 1,
+    sseThreshold: 0.9,
+    pointBudget: DEFAULT_POINT_BUDGET,
+    pointSize: DEFAULT_POINT_SIZE,
+    mode: defaultMode,
+    opacity: DEFAULT_OPACITY,
+    material: {
+      mode: defaultMode,
+      size: DEFAULT_POINT_SIZE,
+      opacity: DEFAULT_OPACITY,
+      depthTest: true,
+      depthWrite: false,
+      transparent: true,
+    },
   });
   layer.addEventListener('load-error', (event: any) => {
     if (event?.error?.isCancelledCommandException) return;
     workerError = new Error(`Décodage LiDAR impossible : ${errorMessage(event?.error)}`);
   });
 
-  setStatus('loading', 'Reprojection et placement du LiDAR dans la scène iTowns…');
+  setStatus('loading', 'Ajout de la CopcLayer et préparation du LOD iTowns…');
   await (itowns.View.prototype.addLayer.call(view, layer) as Promise<any>);
   await layer.whenReady;
   adaptCopcLayerToGlobe(layer, source, view.referenceCrs);
 
-  // Le matériau, le LOD, le scheduler, le picking et le rendu restent ceux de
-  // CopcLayer/PointCloudLayer. Seule la reprojection manquante de la 2.46 est
-  // rétroportée dans notre worker et dans les boîtes de l’octree.
-  layer.material.depthTest = false;
-  layer.material.depthWrite = false;
-  layer.material.needsUpdate = true;
+  context = { view, layer, orthoLayer, terrainLayer, frame };
+  renderModeSelect.value = 'classification';
+  pointSizeInput.value = String(DEFAULT_POINT_SIZE);
+  opacityInput.value = String(DEFAULT_OPACITY);
+  pointBudgetInput.value = String(DEFAULT_POINT_BUDGET);
+  updateControlLabels();
+  setPointRenderingMode('classification');
+  applyPointStyle();
+  installITownsWidgets(view);
 
-  await view.controls.lookAtCoordinate({
-    coord: frame.center,
-    range: frame.range,
-    tilt: 55,
-    heading: 0,
-    time: 0,
-  });
+  await setCamera('3d');
   view.notifyChange(layer);
 
-  const stats = await waitForPoints(view, layer, () => workerError);
-  setStatus('success', `${label} — ${stats.points.toLocaleString('fr-FR')} points LiDAR rendus par iTowns sur le terrain IGN.`);
+  const firstStats = await waitForPoints(view, layer, () => workerError);
+  const colorOption = renderModeSelect.querySelector<HTMLOptionElement>('option[value="color"]');
+  if (colorOption && !hasPointColors(layer)) {
+    colorOption.disabled = true;
+    colorOption.textContent = 'Couleurs source indisponibles';
+  }
+
+  startLiveStats();
+  setStatus(
+    'success',
+    `${label} — visionneuse iTowns active, ${firstStats.points.toLocaleString('fr-FR')} points chargés. Zoomez pour augmenter le niveau de détail.`,
+  );
 
   window.addEventListener('resize', () => {
     view.resize?.();
@@ -356,12 +548,18 @@ async function openCopc(): Promise<void> {
   });
 }
 
+bindViewerControls();
 backButton.addEventListener('click', () => {
   if (window.history.length > 1) window.history.back();
   else window.location.assign('/');
 });
 
+window.addEventListener('beforeunload', () => {
+  if (statsTimer !== undefined) window.clearInterval(statsTimer);
+});
+
 void openCopc().catch((error: unknown) => {
-  console.error('[Vue terrain LiDAR iTowns]', error);
+  console.error('[Visionneuse terrain LiDAR iTowns]', error);
   setStatus('error', errorMessage(error));
+  liveStats.textContent = 'La visionneuse n’a pas pu initialiser le nuage LiDAR.';
 });
