@@ -21,7 +21,7 @@ LIDAR_WFS_URL = "https://data.geopf.fr/wfs/ows"
 LIDAR_TILE_TYPENAME = "IGNF_NUAGES-DE-POINTS-LIDAR-HD:dalle"
 LIDAR_DOWNLOAD_PREFIX = "https://data.geopf.fr/telechargement/download/"
 
-app = FastAPI(title="Simulateur LiDAR France API", version="0.3.0")
+app = FastAPI(title="Simulateur LiDAR France API", version="0.3.1")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -70,28 +70,45 @@ def fetch_json(url: str, timeout: int = 12) -> dict:
     return data
 
 
+def is_laz_url(value: str) -> bool:
+    return bool(re.search(r"^https?://.*\.laz(?:[?#].*)?$", value, re.IGNORECASE))
+
+
+def is_copc_url(value: str) -> bool:
+    return ".copc.laz" in value.lower()
+
+
 def find_download_url(value: object) -> str | None:
+    """Trouve une URL LAZ/COPC dans une réponse WFS, en préférant COPC.
+
+    Les propriétés WFS ne sont pas toujours homogènes : selon les lots, l'URL peut
+    être un champ direct, un lien imbriqué ou une chaîne parmi d'autres métadonnées.
+    """
     if isinstance(value, str):
-        if value.startswith(LIDAR_DOWNLOAD_PREFIX) and value.lower().endswith((".copc.laz", ".laz")):
-            return value
-        return None
+        trimmed = value.strip()
+        return trimmed if is_laz_url(trimmed) else None
+
+    candidates: list[str] = []
     if isinstance(value, dict):
         for child in value.values():
             found = find_download_url(child)
             if found:
-                return found
-    if isinstance(value, list):
+                candidates.append(found)
+    elif isinstance(value, list):
         for child in value:
             found = find_download_url(child)
             if found:
-                return found
-    return None
+                candidates.append(found)
+
+    if not candidates:
+        return None
+    return next((url for url in candidates if is_copc_url(url)), candidates[0])
 
 
 def safe_filename_from_url(url: str) -> str:
     raw = url.rstrip("/").split("/")[-1]
     name = re.sub(r"[^A-Za-z0-9_.-]", "_", raw)
-    if not name.lower().endswith((".copc.laz", ".laz")):
+    if not name.lower().endswith(".laz"):
         raise HTTPException(status_code=400, detail="URL LiDAR invalide")
     return name
 
@@ -118,12 +135,7 @@ def lidar_tiles(
     bbox: str = Query(description="Emprise en EPSG:4326 : minLon,minLat,maxLon,maxLat"),
     limit: int = Query(default=20, ge=1, le=100),
 ) -> dict:
-    """Recherche les dalles LiDAR HD IGN qui intersectent une emprise.
-
-    Le navigateur fournit une emprise issue de la sélection rectangulaire. Le serveur
-    interroge le WFS Géoplateforme et renvoie les dalles disponibles, enrichies avec
-    l'éventuelle URL COPC trouvée dans les propriétés retournées.
-    """
+    """Recherche les dalles LiDAR HD IGN qui intersectent une emprise."""
     try:
         min_lon, min_lat, max_lon, max_lat = [float(part) for part in bbox.split(",")]
     except ValueError as exc:
@@ -155,28 +167,28 @@ def lidar_tiles(
                 continue
             properties = feature.get("properties")
             if isinstance(properties, dict):
-                feature["downloadUrl"] = find_download_url(properties)
+                download_url = find_download_url(properties)
+                feature["downloadUrl"] = download_url
+                feature["isCopc"] = bool(download_url and is_copc_url(download_url))
 
     return data
 
 
 @app.post("/lidar/download")
 def lidar_download(payload: LidarDownloadRequest) -> dict[str, str]:
-    """Télécharge une dalle LiDAR dans data/lidar.
-
-    Les dalles COPC peuvent peser plusieurs centaines de Mo ou plus. Cette route est
-    volontairement limitée aux URL officielles de téléchargement Géoplateforme.
-    """
+    """Télécharge une dalle LiDAR dans data/lidar puis renvoie son URL locale."""
     url = str(payload.url)
     if not url.startswith(LIDAR_DOWNLOAD_PREFIX):
         raise HTTPException(status_code=400, detail="Seules les URL de téléchargement Géoplateforme sont autorisées")
+    if not is_copc_url(url):
+        raise HTTPException(status_code=400, detail="Cette route charge uniquement les dalles COPC")
 
     filename = safe_filename_from_url(url)
     target = LIDAR_DIR / filename
     if not target.exists():
         try:
             urlretrieve(url, target)
-        except Exception as exc:  # noqa: BLE001 - on remonte une erreur HTTP lisible côté interface
+        except Exception as exc:  # noqa: BLE001 - erreur lisible côté interface
             if target.exists():
                 target.unlink(missing_ok=True)
             raise HTTPException(status_code=502, detail=f"Téléchargement impossible : {exc}") from exc
