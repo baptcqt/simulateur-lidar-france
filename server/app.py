@@ -33,7 +33,7 @@ DOWNLOAD_JOBS: dict[str, dict[str, Any]] = {}
 DOWNLOAD_CANCEL_EVENTS: dict[str, threading.Event] = {}
 DOWNLOAD_LOCK = threading.Lock()
 
-app = FastAPI(title="Simulateur LiDAR France API", version="0.4.0")
+app = FastAPI(title="Simulateur LiDAR France API", version="0.4.1")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -391,3 +391,11 @@ def get_file(relative_path: str, range_header: str | None = Header(default=None,
 @app.head("/files/{relative_path:path}")
 def head_file(relative_path: str, range_header: str | None = Header(default=None, alias="Range")):
     return file_response(resolve_data_file(relative_path), range_header, head_only=True)
+
+
+# Register local-file routes on the canonical application itself. This keeps
+# `server.app:app` and `server.main:app` equivalent and prevents 404 responses
+# when the API is started manually or by an older launcher.
+from server.local_files import router as local_lidar_router  # noqa: E402
+
+app.include_router(local_lidar_router)
