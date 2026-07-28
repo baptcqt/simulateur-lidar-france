@@ -100,7 +100,7 @@ web/scripts/         préparation des ressources WebAssembly
 server/              proxy IGN, cache COPC, import local et service Range HTTP
 tests/               tests de l’API locale
 configs/             catalogue logique des couches IGN
-data/lidar/           dalles COPC locales, ignorées par Git
+data/lidar/          dalles COPC locales, ignorées par Git
 scripts/windows/     installation et lancement Windows
 ```
 
