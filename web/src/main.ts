@@ -4,6 +4,7 @@ import './style.css';
 
 type BaseMode = 'topo' | 'satellite' | 'itowns';
 type CameraMode = 'flat' | 'oblique';
+type BBox4326 = { minLon: number; minLat: number; maxLon: number; maxLat: number };
 
 type GeocodeFeature = {
   type: 'Feature';
@@ -21,7 +22,13 @@ type LidarFeature = {
 };
 
 type LidarResponse = { features?: LidarFeature[] };
-type BBox4326 = { minLon: number; minLat: number; maxLon: number; maxLat: number };
+
+type LidarDownloadResponse = {
+  filename?: string;
+  path?: string;
+  sizeBytes?: number;
+  status?: 'cached' | 'downloaded';
+};
 
 const app = document.querySelector<HTMLDivElement>('#app');
 if (!app) throw new Error('Élément #app introuvable');
@@ -76,6 +83,11 @@ app.innerHTML = `
       <button id="clear-lidar" type="button">Retirer le LiDAR chargé</button>
     </section>
 
+    <section class="block operation-block">
+      <h2>Opération en cours</h2>
+      <div id="lidar-operation" class="operation-card">Aucun chargement LiDAR lancé.</div>
+    </section>
+
     <div id="status">Initialisation…</div>
   </aside>
   <main id="viewer">
@@ -94,6 +106,7 @@ const searchResults = document.querySelector<HTMLDivElement>('#search-results');
 const bboxOutput = document.querySelector<HTMLElement>('#bbox-output');
 const queryLidarButton = document.querySelector<HTMLButtonElement>('#query-lidar');
 const lidarResults = document.querySelector<HTMLDivElement>('#lidar-results');
+const lidarOperation = document.querySelector<HTMLDivElement>('#lidar-operation');
 const selectionOverlay = document.querySelector<HTMLDivElement>('#selection-overlay');
 const selectionRect = document.querySelector<HTMLDivElement>('#selection-rect');
 const copcUrlInput = document.querySelector<HTMLInputElement>('#copc-url');
@@ -120,7 +133,6 @@ const placement = {
 };
 
 const view = new itowns.GlobeView(viewerDiv, placement);
-let activeBaseMode: BaseMode = 'topo';
 let activeLayerId: string | null = null;
 let activeCopcLayerId: string | null = null;
 let cameraMode: CameraMode = 'flat';
@@ -129,12 +141,24 @@ let selectedBBox: BBox4326 | null = null;
 let selecting = false;
 let draggingSelection = false;
 let selectionStart: { x: number; y: number } | null = null;
-let currentLon = DEFAULT_LON;
-let currentLat = DEFAULT_LAT;
-let currentRange = DEFAULT_RANGE;
+let cameraTarget = { lon: DEFAULT_LON, lat: DEFAULT_LAT, range: DEFAULT_RANGE };
 
 function setStatus(message: string): void {
   if (status) status.textContent = message;
+}
+
+function setOperation(message: string, detail?: string): void {
+  if (!lidarOperation) return;
+  lidarOperation.innerHTML = '';
+  const main = document.createElement('strong');
+  main.textContent = message;
+  lidarOperation.appendChild(main);
+  if (detail) {
+    const small = document.createElement('div');
+    small.className = 'small';
+    small.textContent = detail;
+    lidarOperation.appendChild(small);
+  }
 }
 
 function notifyView(): void {
@@ -143,6 +167,11 @@ function notifyView(): void {
 
 function currentTilt(): number {
   return cameraMode === 'flat' ? FLAT_TILT : OBLIQUE_TILT;
+}
+
+function setRadioValue(name: string, value: string): void {
+  const input = document.querySelector<HTMLInputElement>(`input[name="${name}"][value="${value}"]`);
+  if (input) input.checked = true;
 }
 
 function createWmtsLayer(id: string, layerName: string, format: string): any {
@@ -159,8 +188,12 @@ function createWmtsLayer(id: string, layerName: string, format: string): any {
 }
 
 function layerConfig(mode: BaseMode): { label: string; layerName: string; format: string } {
-  if (mode === 'satellite') return { label: 'Satellite IGN', layerName: satelliteLayerName, format: 'image/jpeg' };
-  if (mode === 'itowns') return { label: 'Vue iTowns avancée', layerName: topoLayerName, format: 'image/png' };
+  if (mode === 'satellite') {
+    return { label: 'Satellite IGN', layerName: satelliteLayerName, format: 'image/jpeg' };
+  }
+  if (mode === 'itowns') {
+    return { label: 'Vue iTowns avancée', layerName: topoLayerName, format: 'image/png' };
+  }
   return { label: 'BD topo / Plan IGN', layerName: topoLayerName, format: 'image/png' };
 }
 
@@ -179,7 +212,7 @@ async function removeActiveBaseLayer(): Promise<void> {
 
 async function setBaseMode(mode: BaseMode): Promise<void> {
   const switchId = ++layerSwitchSequence;
-  activeBaseMode = mode;
+  setRadioValue('base-mode', mode);
   setStatus('Changement de vue…');
 
   await removeActiveBaseLayer();
@@ -193,18 +226,14 @@ async function setBaseMode(mode: BaseMode): Promise<void> {
   await view.addLayer(layer);
   if (switchId !== layerSwitchSequence) return;
 
-  if (mode === 'itowns') {
-    setStatus('Vue iTowns avancée active : outils LiDAR disponibles.');
-  } else {
-    setStatus(`${config.label} actif.`);
-  }
+  setStatus(mode === 'itowns'
+    ? 'Vue iTowns avancée active. Le fond topo sert de repère, le LiDAR se charge par-dessus.'
+    : `${config.label} actif en ${cameraMode === 'flat' ? 'vue 2D verticale' : 'vue 3D légère'}.`);
   notifyView();
 }
 
-function applyCamera(lon: number, lat: number, label?: string): void {
-  currentLon = lon;
-  currentLat = lat;
-
+function applyCamera(lon: number, lat: number, label?: string, range = cameraTarget.range): void {
+  cameraTarget = { lon, lat, range };
   const controls = view.controls;
   if (!controls) {
     setStatus('Contrôles caméra indisponibles.');
@@ -213,18 +242,19 @@ function applyCamera(lon: number, lat: number, label?: string): void {
 
   void controls.lookAtCoordinate({
     coord: new itowns.Coordinates('EPSG:4326', lon, lat),
-    range: currentRange,
+    range,
     tilt: currentTilt(),
     heading: 0,
     time: 650,
   });
 
-  setStatus(label ? `Position atteinte : ${label}` : 'Position atteinte.');
+  setStatus(label ? `Position atteinte : ${label}` : `Position atteinte : ${lat.toFixed(6)}, ${lon.toFixed(6)}`);
 }
 
 function setCameraMode(mode: CameraMode): void {
   cameraMode = mode;
-  applyCamera(currentLon, currentLat, mode === 'flat' ? 'vue 2D verticale' : 'vue 3D légère');
+  setRadioValue('camera-mode', mode);
+  applyCamera(cameraTarget.lon, cameraTarget.lat, mode === 'flat' ? 'vue 2D verticale' : 'vue 3D légère');
 }
 
 function renderSearchResults(features: GeocodeFeature[]): void {
@@ -246,7 +276,7 @@ function renderSearchResults(features: GeocodeFeature[]): void {
     button.type = 'button';
     button.className = 'result-item';
     button.textContent = label;
-    button.addEventListener('click', () => applyCamera(lon, lat, label));
+    button.addEventListener('click', () => applyCamera(lon, lat, label, DEFAULT_RANGE));
     list.appendChild(button);
   }
 
@@ -272,7 +302,7 @@ async function searchAddress(query: string): Promise<void> {
   if (features[0]) {
     const [lon, lat] = features[0].geometry.coordinates;
     const label = features[0].properties.label ?? features[0].properties.name;
-    applyCamera(lon, lat, label);
+    applyCamera(lon, lat, label, DEFAULT_RANGE);
   } else {
     setStatus('Aucune adresse trouvée.');
   }
@@ -312,9 +342,16 @@ function setSelectedBBox(bbox: BBox4326): void {
   if (queryLidarButton) queryLidarButton.disabled = false;
 }
 
+function setControlsEnabled(enabled: boolean): void {
+  const controls = view.controls as any;
+  if (controls?.states) controls.states.enabled = enabled;
+  else if (controls && 'enabled' in controls) controls.enabled = enabled;
+}
+
 function stopSelectionMode(): void {
   selecting = false;
   draggingSelection = false;
+  setControlsEnabled(true);
   document.body.classList.remove('selection-active');
 }
 
@@ -348,6 +385,7 @@ function enableRectangleSelection(): void {
   selecting = true;
   draggingSelection = false;
   selectionStart = null;
+  setControlsEnabled(false);
   document.body.classList.add('selection-active');
   setCameraMode('flat');
   setStatus('Sélection active : la carte est bloquée, glissez pour tracer le rectangle.');
@@ -384,6 +422,18 @@ function featureLabel(feature: LidarFeature, index: number): string {
   return feature.id ?? `Dalle LiDAR ${index + 1}`;
 }
 
+function formatBytes(value?: number): string {
+  if (!value || value <= 0) return 'taille inconnue';
+  const units = ['o', 'Ko', 'Mo', 'Go'];
+  let amount = value;
+  let unit = 0;
+  while (amount >= 1024 && unit < units.length - 1) {
+    amount /= 1024;
+    unit += 1;
+  }
+  return `${amount.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
 async function clearLidarLayer(): Promise<void> {
   if (!activeCopcLayerId) return;
   const existing = view.getLayerById(activeCopcLayerId);
@@ -391,6 +441,33 @@ async function clearLidarLayer(): Promise<void> {
   activeCopcLayerId = null;
   notifyView();
   setStatus('Couche LiDAR retirée.');
+  setOperation('LiDAR retiré.');
+}
+
+async function centerOnCopcSource(source: any): Promise<void> {
+  const extent = source?.extent?.as ? source.extent.as('EPSG:4326') : null;
+  if (!extent) {
+    setOperation('COPC chargé, mais emprise inconnue.', 'Le nuage est peut-être chargé hors champ.');
+    return;
+  }
+
+  const center = extent.center(new itowns.Coordinates('EPSG:4326'));
+  const dimensions = extent.geodeticDimensions(new THREE.Vector2());
+  const range = Math.max(dimensions.x, dimensions.y, 250) * 2.8;
+  cameraTarget = { lon: center.longitude, lat: center.latitude, range };
+  cameraMode = 'oblique';
+  setRadioValue('camera-mode', 'oblique');
+
+  const controls = view.controls;
+  if (!controls) return;
+  await controls.lookAtCoordinate({
+    coord: center,
+    range,
+    tilt: OBLIQUE_TILT,
+    heading: 0,
+    time: 1000,
+  });
+  notifyView();
 }
 
 async function addCopcLayer(url: string, label = 'LiDAR COPC'): Promise<void> {
@@ -401,29 +478,40 @@ async function addCopcLayer(url: string, label = 'LiDAR COPC'): Promise<void> {
   }
   if (!isCopcUrl(cleanUrl)) {
     setStatus('Cette URL semble être une dalle LAZ classique, pas un COPC. iTowns ne peut charger ici que du COPC.');
+    setOperation('Chargement refusé.', 'Le moteur iTowns/CopcLayer attend une URL .copc.laz.');
     return;
   }
 
   await clearLidarLayer();
   await setBaseMode('itowns');
   cameraMode = 'oblique';
-  const obliqueInput = document.querySelector<HTMLInputElement>('input[name="camera-mode"][value="oblique"]');
-  if (obliqueInput) obliqueInput.checked = true;
+  setRadioValue('camera-mode', 'oblique');
+
+  setOperation('Préparation COPC…', label);
+  setStatus(`Analyse des métadonnées COPC : ${label}`);
 
   const source = new itowns.CopcSource({ url: cleanUrl, colorDepth: 16 });
+  await Promise.resolve((source as any).whenReady);
+
   const layerId = `lidar-copc-${Date.now()}`;
   const layer = new itowns.CopcLayer(layerId, {
     source,
     pointBudget: 500000,
-    pointSize: 2,
+    pointSize: 3,
     sseThreshold: 4,
+    mode: (itowns as any).PNTS_MODE?.CLASSIFICATION ?? 0,
   });
 
   activeCopcLayerId = layerId;
+  setOperation('Ajout du nuage de points dans iTowns…', cleanUrl);
   setStatus(`Chargement COPC dans iTowns : ${label}`);
   await (itowns.View.prototype.addLayer as any).call(view, layer);
-  setCameraMode('oblique');
-  setStatus(`LiDAR COPC chargé : ${label}`);
+  await Promise.resolve((layer as any).whenReady);
+
+  setOperation('Recentrage sur le LiDAR…', label);
+  await centerOnCopcSource(source);
+  setStatus(`LiDAR COPC chargé et caméra recentrée : ${label}`);
+  setOperation('LiDAR COPC chargé.', `${label} — source : ${cleanUrl}`);
 }
 
 async function downloadAndLoadCopc(url: string, label: string): Promise<void> {
@@ -432,16 +520,19 @@ async function downloadAndLoadCopc(url: string, label: string): Promise<void> {
     return;
   }
 
-  setStatus('Téléchargement local de la dalle COPC. Cela peut être long.');
+  setOperation('Téléchargement local en cours…', 'La dalle peut être lourde. La fenêtre peut rester silencieuse pendant le téléchargement.');
+  setStatus('Téléchargement local de la dalle COPC. Cela peut prendre du temps.');
   const response = await fetch(`${apiUrl}/lidar/download`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ url }),
   });
   if (!response.ok) throw new Error(`Erreur HTTP ${response.status}`);
-  const payload = (await response.json()) as { path?: string };
+  const payload = (await response.json()) as LidarDownloadResponse;
   if (!payload.path) throw new Error('Réponse serveur sans chemin de fichier');
-  await addCopcLayer(`${apiUrl}${payload.path}`, `${label} depuis cache local`);
+  const localUrl = `${apiUrl}${payload.path}`;
+  setOperation('Fichier prêt dans le cache local.', `${payload.filename ?? payload.path} — ${formatBytes(payload.sizeBytes)}`);
+  await addCopcLayer(localUrl, `${label} depuis cache local`);
 }
 
 function renderLidarFeatures(features: LidarFeature[]): void {
@@ -469,7 +560,7 @@ function renderLidarFeatures(features: LidarFeature[]): void {
     if (!downloadUrl) {
       detail.textContent = 'Dalle trouvée, mais aucune URL LAZ/COPC exploitable n’a été détectée.';
     } else if (!isCopc) {
-      detail.textContent = 'Dalle LAZ détectée, mais pas COPC : téléchargement possible plus tard, affichage iTowns désactivé pour l’instant.';
+      detail.textContent = 'Dalle LAZ détectée, mais pas COPC : affichage iTowns désactivé pour l’instant.';
     } else {
       detail.textContent = 'Dalle COPC détectée : elle peut être chargée dans iTowns.';
     }
@@ -486,6 +577,7 @@ function renderLidarFeatures(features: LidarFeature[]): void {
       if (downloadUrl) void addCopcLayer(downloadUrl, label).catch((error: unknown) => {
         console.error(error);
         setStatus(`Erreur chargement direct : ${String(error)}`);
+        setOperation('Échec chargement direct.', String(error));
       });
     });
 
@@ -498,6 +590,7 @@ function renderLidarFeatures(features: LidarFeature[]): void {
       if (downloadUrl) void downloadAndLoadCopc(downloadUrl, label).catch((error: unknown) => {
         console.error(error);
         setStatus(`Erreur cache COPC : ${String(error)}`);
+        setOperation('Échec cache local.', String(error));
       });
     });
 
@@ -525,6 +618,7 @@ async function queryLidarTiles(): Promise<void> {
   }
 
   const bbox = `${selectedBBox.minLon},${selectedBBox.minLat},${selectedBBox.maxLon},${selectedBBox.maxLat}`;
+  setOperation('Recherche des dalles LiDAR…', bbox);
   setStatus('Recherche des dalles LiDAR HD IGN…');
   const response = await fetch(`${apiUrl}/lidar/tiles?bbox=${encodeURIComponent(bbox)}&limit=20`);
   if (!response.ok) throw new Error(`Erreur HTTP ${response.status}`);
@@ -532,6 +626,7 @@ async function queryLidarTiles(): Promise<void> {
   const features = data.features ?? [];
   renderLidarFeatures(features);
   setStatus(`${features.length} dalle(s) LiDAR trouvée(s) pour la zone.`);
+  setOperation('Recherche terminée.', `${features.length} dalle(s) trouvée(s).`);
 }
 
 function overlayEventPosition(event: PointerEvent): { x: number; y: number } {
@@ -611,6 +706,7 @@ document.querySelector<HTMLButtonElement>('#query-lidar')?.addEventListener('cli
   void queryLidarTiles().catch((error: unknown) => {
     console.error(error);
     setStatus(`Erreur recherche LiDAR : ${String(error)}`);
+    setOperation('Échec recherche LiDAR.', String(error));
   });
 });
 
@@ -619,6 +715,7 @@ document.querySelector<HTMLButtonElement>('#load-copc-url')?.addEventListener('c
   void addCopcLayer(url, 'URL manuelle').catch((error: unknown) => {
     console.error(error);
     setStatus(`Erreur chargement COPC : ${String(error)}`);
+    setOperation('Échec chargement COPC.', String(error));
   });
 });
 
