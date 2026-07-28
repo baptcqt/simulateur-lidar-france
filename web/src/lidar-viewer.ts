@@ -12,12 +12,19 @@ if (!viewer || !status || !backButton) {
 
 const LAMBERT_93 = '+proj=lcc +lat_1=49 +lat_2=44 +lat_0=46.5 +lon_0=3 +x_0=700000 +y_0=6600000 +ellps=GRS80 +units=m +no_defs';
 const POINT_TIMEOUT_MS = 45_000;
+const EXTENT_TIMEOUT_MS = 10_000;
 
 type PageState = 'loading' | 'success' | 'error';
 
 type PointStats = {
   points: number;
   nodes: number;
+};
+
+type CameraFrame = {
+  center: THREE.Vector3;
+  size: THREE.Vector3;
+  origin: 'voxelOBB' | 'bbox' | 'COPC info cube';
 };
 
 function setStatus(state: PageState, message: string): void {
@@ -70,9 +77,8 @@ function isIgnLambert93(url: string, label: string): boolean {
 
 function normalizeSourceCrs(source: any, url: string, label: string): string {
   // Les COPC IGN portent souvent un CRS composé Lambert-93 + altitude IGN69.
-  // iTowns ne conserve que la partie horizontale des CRS composés. On utilise
-  // explicitement EPSG:2154 afin que le parser LAZ, la couche et la caméra
-  // travaillent tous dans le même référentiel métrique.
+  // iTowns 2.46 ne gère pas complètement les CRS composés : on aligne donc
+  // explicitement la source, la couche et la vue sur la partie horizontale.
   if (isIgnLambert93(url, label)) {
     itowns.CRS.defs('EPSG:2154', LAMBERT_93);
     source.crs = 'EPSG:2154';
@@ -84,24 +90,72 @@ function normalizeSourceCrs(source: any, url: string, label: string): string {
   return source.crs;
 }
 
-function zoomToLayer(view: any, layer: any): void {
-  const obb = layer.root?.voxelOBB;
-  if (!obb) throw new Error('L’emprise 3D du COPC est indisponible.');
+function validVector(vector: THREE.Vector3): boolean {
+  return [vector.x, vector.y, vector.z].every(Number.isFinite);
+}
 
-  // Même cadrage que examples/jsm/PointCloudHelper.js dans iTowns.
-  const center = obb.box3D.getCenter(new THREE.Vector3());
-  obb.localToWorld(center);
-  const length = obb.box3D.getSize(new THREE.Vector3()).length();
+function frameFromLayer(layer: any, source: any): CameraFrame | null {
+  // Structure utilisée par les versions récentes d’iTowns.
+  const obb = layer.root?.voxelOBB;
+  if (obb?.box3D?.getCenter && obb?.box3D?.getSize) {
+    const center = obb.box3D.getCenter(new THREE.Vector3());
+    obb.localToWorld?.(center);
+    const size = obb.box3D.getSize(new THREE.Vector3());
+    if (validVector(center) && validVector(size) && size.length() > 0) {
+      return { center, size, origin: 'voxelOBB' };
+    }
+  }
+
+  // Structure exposée par certaines distributions iTowns 2.46.
+  const bbox = layer.root?.bbox;
+  if (bbox?.getCenter && bbox?.getSize) {
+    const center = bbox.getCenter(new THREE.Vector3());
+    const size = bbox.getSize(new THREE.Vector3());
+    if (validVector(center) && validVector(size) && size.length() > 0) {
+      return { center, size, origin: 'bbox' };
+    }
+  }
+
+  // Le VLR COPC info contient toujours le cube racine. Il permet de cadrer la
+  // vue même si le nom de la propriété interne du nœud change entre versions.
+  const cube = source.info?.cube;
+  if (Array.isArray(cube) && cube.length >= 6 && cube.slice(0, 6).every(Number.isFinite)) {
+    const box = new THREE.Box3(
+      new THREE.Vector3(cube[0], cube[1], cube[2]),
+      new THREE.Vector3(cube[3], cube[4], cube[5]),
+    );
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    if (validVector(center) && validVector(size) && size.length() > 0) {
+      return { center, size, origin: 'COPC info cube' };
+    }
+  }
+
+  return null;
+}
+
+async function waitForCameraFrame(layer: any, source: any): Promise<CameraFrame> {
+  const startedAt = performance.now();
+  while (performance.now() - startedAt < EXTENT_TIMEOUT_MS) {
+    const frame = frameFromLayer(layer, source);
+    if (frame) return frame;
+    await new Promise((resolve) => window.setTimeout(resolve, 50));
+  }
+  throw new Error('iTowns a lu les métadonnées, mais aucune emprise 3D exploitable n’a été trouvée.');
+}
+
+function zoomToFrame(view: any, frame: CameraFrame): void {
+  const length = frame.size.length();
   const camera = view.camera3D as THREE.PerspectiveCamera;
   const fov = THREE.MathUtils.degToRad(camera.fov);
   const radius = Math.max(length / 2, 1);
   const distance = radius / Math.tan(fov / 2);
 
-  camera.position.copy(center).addScaledVector(new THREE.Vector3(0, 0, 1), distance);
+  camera.position.copy(frame.center).addScaledVector(new THREE.Vector3(0, 0, 1), distance);
   camera.up.set(0, 1, 0);
   camera.near = Math.max(distance / 100_000, 0.1);
   camera.far = Math.max(2 * distance, 1_000);
-  camera.lookAt(center);
+  camera.lookAt(frame.center);
   camera.updateProjectionMatrix();
   view.notifyChange(camera);
 }
@@ -156,23 +210,22 @@ async function openCopc(): Promise<void> {
 
   itowns.LASParser.enableLazPerf('/laz-perf');
 
-  // Structure volontairement identique au chargeur COPC simple officiel.
-  const view = new itowns.View('EPSG:4326', viewer);
-  const controls = new itowns.PlanarControls(view);
-  void controls;
-  view.mainLoop.gfxEngine.renderer.setClearColor(0x202225);
-
   setStatus('loading', `Lecture des métadonnées COPC${fileSize ? ` — ${(fileSize / 1024 / 1024).toFixed(1)} Mo` : ''}…`);
   const source = new itowns.CopcSource({ url: parsedUrl.toString() });
   await source.whenReady;
-
   const crs = normalizeSourceCrs(source, parsedUrl.toString(), label);
-  view.referenceCrs = crs;
-  view.camera.crs = crs;
+
+  // La vue est créée directement dans le CRS final. Cela évite de modifier le
+  // référentiel d’une caméra déjà initialisée.
+  const view = new itowns.View(crs, viewer);
+  const controls = new itowns.PlanarControls(view);
+  view.controls = controls;
+  view.mainLoop.gfxEngine.renderer.setClearColor(0x202225);
 
   let workerError: Error | null = null;
   const layer = new itowns.CopcLayer('COPC', {
     source,
+    crs,
     sseThreshold: 2,
     pointBudget: 3_000_000,
     pointSize: 2,
@@ -186,7 +239,11 @@ async function openCopc(): Promise<void> {
 
   setStatus('loading', `Ouverture de ${label} dans iTowns…`);
   await view.addLayer(layer);
-  zoomToLayer(view, layer);
+  await layer.whenReady;
+
+  const frame = await waitForCameraFrame(layer, source);
+  zoomToFrame(view, frame);
+  setStatus('loading', `Emprise ${frame.origin} trouvée. Chargement des points…`);
 
   const stats = await waitForPoints(view, layer, () => workerError);
   setStatus('success', `${label} — ${stats.points.toLocaleString('fr-FR')} points chargés dans iTowns.`);
