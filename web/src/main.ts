@@ -1,5 +1,4 @@
 import * as itowns from 'itowns';
-import 'itowns/dist/itowns.css';
 import './style.css';
 
 const app = document.querySelector<HTMLDivElement>('#app');
