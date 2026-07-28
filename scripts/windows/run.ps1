@@ -65,7 +65,7 @@ Stop-ProjectListener -Port 8000
 Stop-ProjectListener -Port 5173
 Start-Sleep -Milliseconds 700
 
-$ApiCommand = "Set-Location '$Root'; & '$VenvPython' -m uvicorn server.app:app --reload --port 8000"
+$ApiCommand = "Set-Location '$Root'; & '$VenvPython' -m uvicorn server.main:app --reload --port 8000"
 $WebCommand = "Set-Location '$Root'; npm run dev --prefix web"
 
 Start-Process powershell -ArgumentList @('-NoExit', '-NoProfile', '-Command', $ApiCommand)
