@@ -10,6 +10,8 @@ html, body, #app { width: 100%; height: 100%; margin: 0; font-family: system-ui,
 .panel input[type='number'], .panel input[type='search'] { width: 100%; padding: 9px; margin-top: 4px; border: 1px solid #bbb; border-radius: 6px; }
 .panel input[type='radio'] { margin-right: 8px; }
 .panel button { padding: 10px; cursor: pointer; border: 1px solid #999; border-radius: 6px; background: white; }
+.panel button:hover { filter: brightness(.97); }
+#go, #reset-flat { width: 100%; margin-top: 8px; }
 .row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; }
 .results { margin-top: 10px; }
 .result-list { display: grid; gap: 6px; }
@@ -18,4 +20,4 @@ html, body, #app { width: 100%; height: 100%; margin: 0; font-family: system-ui,
 .hint, #status { font-size: .9rem; line-height: 1.4; }
 #status { margin-top: 14px; padding: 10px; border-radius: 6px; background: #fff; border: 1px solid #ddd; }
 #viewer { width: 100%; height: 100%; min-width: 0; }
-@media (max-width: 800px) { #app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; } .panel { max-height: 46vh; } }
+@media (max-width: 800px) { #app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; } .panel { max-height: 46vh; } .row { grid-template-columns: 1fr; } }
