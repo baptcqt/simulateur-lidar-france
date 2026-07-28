@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 import server.app as app_module
+from server.main import app as main_app
 
 
 @pytest.fixture(autouse=True)
@@ -15,6 +16,17 @@ def clear_download_jobs():
         app_module.DOWNLOAD_JOBS.clear()
         app_module.DOWNLOAD_CANCEL_EVENTS.clear()
     yield
+
+
+def test_api_entrypoints_expose_local_lidar_routes_once():
+    assert app_module.app is main_app
+    matching_routes = [
+        route
+        for route in app_module.app.routes
+        if getattr(route, "path", None) == "/local-lidar/files"
+    ]
+    assert len(matching_routes) == 1
+    assert TestClient(app_module.app).get("/local-lidar/files").status_code == 200
 
 
 def test_parse_range_header_variants():
