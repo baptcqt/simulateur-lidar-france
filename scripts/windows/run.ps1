@@ -39,7 +39,7 @@ function Wait-ForUrl {
     for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
         try {
             $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 2
-            if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 500) {
+            if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 300) {
                 Write-Host "$Name prêt."
                 return
             }
@@ -72,6 +72,7 @@ Start-Process powershell -ArgumentList @('-NoExit', '-NoProfile', '-Command', $A
 Start-Process powershell -ArgumentList @('-NoExit', '-NoProfile', '-Command', $WebCommand)
 
 Wait-ForUrl -Url 'http://127.0.0.1:8000/health' -Name 'API LiDAR'
+Wait-ForUrl -Url 'http://127.0.0.1:8000/local-lidar/files' -Name 'Accès aux dalles locales'
 Wait-ForUrl -Url 'http://127.0.0.1:5173/laz-perf/laz-perf.wasm' -Name 'Décodeur LiDAR local'
 Wait-ForUrl -Url 'http://127.0.0.1:5173' -Name 'Interface iTowns'
 
