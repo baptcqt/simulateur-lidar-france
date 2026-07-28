@@ -23,4 +23,5 @@ jobs:
         with:
           node-version: '22'
       - run: npm install --prefix web
+      - run: npm run verify:itowns --prefix web
       - run: npm run build --prefix web
