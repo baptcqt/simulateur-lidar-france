@@ -1,0 +1,38 @@
+* { box-sizing: border-box; }
+html, body, #lidar-viewer { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+body { background: #202225; font-family: system-ui, sans-serif; }
+#lidar-viewer { position: absolute; inset: 0; }
+#lidar-viewer canvas { display: block; }
+#lidar-toolbar {
+  position: fixed;
+  top: 14px;
+  left: 14px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(760px, calc(100vw - 28px));
+  padding: 9px;
+  border-radius: 8px;
+  background: rgb(25 27 30 / 88%);
+  color: #fff;
+  box-shadow: 0 4px 18px rgb(0 0 0 / 35%);
+  backdrop-filter: blur(6px);
+}
+#back-to-map {
+  flex: none;
+  padding: 9px 12px;
+  border: 1px solid #aeb5bc;
+  border-radius: 6px;
+  background: #fff;
+  color: #111;
+  cursor: pointer;
+  font-weight: 700;
+}
+#lidar-page-status { min-width: 0; font-size: .9rem; line-height: 1.35; overflow-wrap: anywhere; }
+#lidar-page-status.loading::before { content: '●'; margin-right: 8px; color: #e3b341; }
+#lidar-page-status.success::before { content: '●'; margin-right: 8px; color: #3fb950; }
+#lidar-page-status.error::before { content: '●'; margin-right: 8px; color: #f85149; }
+@media (max-width: 650px) {
+  #lidar-toolbar { right: 14px; align-items: stretch; flex-direction: column; }
+}
