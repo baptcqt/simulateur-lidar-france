@@ -13,15 +13,13 @@ if (!viewer || !status || !backButton) {
 const LAMBERT_93 = '+proj=lcc +lat_1=49 +lat_2=44 +lat_0=46.5 +lon_0=3 +x_0=700000 +y_0=6600000 +ellps=GRS80 +units=m +no_defs';
 const WMTS_URL = (import.meta.env.VITE_IGN_WMTS_URL as string | undefined) ?? 'https://data.geopf.fr/wmts';
 const ORTHO_LAYER = (import.meta.env.VITE_IGN_ORTHO_LAYER as string | undefined) ?? 'ORTHOIMAGERY.ORTHOPHOTOS';
-const POINT_TIMEOUT_MS = 60_000;
+const POINT_TIMEOUT_MS = 8_000;
 const ROOT_LOAD_TIMEOUT_MS = 60_000;
 
 type PageState = 'loading' | 'success' | 'error';
 type PointStats = { points: number; nodes: number };
-type CopcFrame = {
-  center: any;
-  range: number;
-};
+type CopcFrame = { center: any; range: number };
+type AdaptedCopcNode = any & { nativeBbox?: THREE.Box3 };
 
 function setStatus(state: PageState, message: string): void {
   status.className = state;
@@ -141,6 +139,79 @@ function createElevationLayer(): any {
   } as any);
 }
 
+function projectPoint(point: THREE.Vector3, sourceCrs: string, targetCrs: string): THREE.Vector3 {
+  return new itowns.Coordinates(sourceCrs, point.x, point.y, point.z)
+    .as(targetCrs)
+    .toVector3(new THREE.Vector3());
+}
+
+function projectBox3(box: THREE.Box3, sourceCrs: string, targetCrs: string): THREE.Box3 {
+  const projected = new THREE.Box3().makeEmpty();
+  const xValues = [box.min.x, box.max.x];
+  const yValues = [box.min.y, box.max.y];
+  const zValues = [box.min.z, box.max.z];
+
+  for (const x of xValues) {
+    for (const y of yValues) {
+      for (const z of zValues) {
+        projected.expandByPoint(projectPoint(new THREE.Vector3(x, y, z), sourceCrs, targetCrs));
+      }
+    }
+  }
+  return projected;
+}
+
+function nativeChildBox(parent: AdaptedCopcNode, child: AdaptedCopcNode): THREE.Box3 {
+  const parentBox = parent.nativeBbox;
+  if (!parentBox) throw new Error('Emprise native du nœud COPC absente.');
+
+  const factor = 2 ** (Number(child.depth) - Number(parent.depth));
+  const childSize = parentBox.getSize(new THREE.Vector3()).divideScalar(factor);
+  const parentGrid = new THREE.Vector3(Number(parent.x), Number(parent.y), Number(parent.z)).multiplyScalar(factor);
+  const childGrid = new THREE.Vector3(Number(child.x), Number(child.y), Number(child.z));
+  const offset = childGrid.sub(parentGrid).multiply(childSize);
+  const min = parentBox.min.clone().add(offset);
+  return new THREE.Box3(min, min.clone().add(childSize));
+}
+
+function adaptCopcNodeToGlobe(
+  node: AdaptedCopcNode,
+  parent: AdaptedCopcNode | null,
+  sourceCrs: string,
+  targetCrs: string,
+  rootCube?: number[],
+): void {
+  const nativeBox = parent
+    ? nativeChildBox(parent, node)
+    : new THREE.Box3(
+      new THREE.Vector3(rootCube?.[0], rootCube?.[1], rootCube?.[2]),
+      new THREE.Vector3(rootCube?.[3], rootCube?.[4], rootCube?.[5]),
+    );
+
+  node.nativeBbox = nativeBox;
+  node.bbox.copy(projectBox3(nativeBox, sourceCrs, targetCrs));
+
+  // iTowns 2.46 calcule les enfants à partir de bbox. Après projection globe,
+  // cette bbox est géocentrique : on conserve donc séparément le cube Lambert
+  // pour les subdivisions et on projette chaque enfant vers le CRS de la vue.
+  node.createChildAABB = (child: AdaptedCopcNode) => {
+    adaptCopcNodeToGlobe(child, node, sourceCrs, targetCrs);
+  };
+
+  for (const child of node.children ?? []) {
+    adaptCopcNodeToGlobe(child, node, sourceCrs, targetCrs);
+  }
+}
+
+function adaptCopcLayerToGlobe(layer: any, source: any, targetCrs: string): void {
+  const cube = source.info?.cube;
+  if (!layer.root || !Array.isArray(cube) || cube.length < 6) {
+    throw new Error('Impossible de préparer l’octree COPC pour la vue globe.');
+  }
+  adaptCopcNodeToGlobe(layer.root, null, source.crs, targetCrs, cube);
+  layer.object3d.updateMatrixWorld(true);
+}
+
 function countPoints(layer: any): PointStats {
   let points = 0;
   let nodes = 0;
@@ -244,20 +315,29 @@ async function openCopc(): Promise<void> {
   const layer = new itowns.CopcLayer('COPC', {
     source,
     crs: view.referenceCrs,
-    sseThreshold: 2,
+    sseThreshold: 1.5,
     pointBudget: 3_000_000,
-    pointSize: 2,
+    pointSize: 3,
     mode: itowns.PNTS_MODE.CLASSIFICATION,
-    opacity: 0.92,
+    opacity: 1,
   });
   layer.addEventListener('load-error', (event: any) => {
     if (event?.error?.isCancelledCommandException) return;
     workerError = new Error(`Décodage LiDAR impossible : ${errorMessage(event?.error)}`);
   });
 
-  setStatus('loading', 'Placement du LiDAR sur le terrain 3D…');
+  setStatus('loading', 'Reprojection et placement du LiDAR dans la scène iTowns…');
   await (itowns.View.prototype.addLayer.call(view, layer) as Promise<any>);
   await layer.whenReady;
+  adaptCopcLayerToGlobe(layer, source, view.referenceCrs);
+
+  // Le matériau, le LOD, le scheduler, le picking et le rendu restent ceux de
+  // CopcLayer/PointCloudLayer. Seule la reprojection manquante de la 2.46 est
+  // rétroportée dans notre worker et dans les boîtes de l’octree.
+  layer.material.depthTest = false;
+  layer.material.depthWrite = false;
+  layer.material.needsUpdate = true;
+
   await view.controls.lookAtCoordinate({
     coord: frame.center,
     range: frame.range,
@@ -265,10 +345,10 @@ async function openCopc(): Promise<void> {
     heading: 0,
     time: 0,
   });
-  view.notifyChange(view.camera3D);
+  view.notifyChange(layer);
 
   const stats = await waitForPoints(view, layer, () => workerError);
-  setStatus('success', `${label} — terrain IGN et ${stats.points.toLocaleString('fr-FR')} points LiDAR affichés.`);
+  setStatus('success', `${label} — ${stats.points.toLocaleString('fr-FR')} points LiDAR rendus par iTowns sur le terrain IGN.`);
 
   window.addEventListener('resize', () => {
     view.resize?.();
