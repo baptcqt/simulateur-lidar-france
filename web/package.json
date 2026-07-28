@@ -1,7 +1,7 @@
 {
   "name": "simulateur-lidar-france-web",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
@@ -9,8 +9,6 @@
     "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {
-    "@itowns/geographic": "2.46.0",
-    "@itowns/geographic-extent": "2.46.0",
     "itowns": "2.46.0",
     "three": "0.174.0"
   },
