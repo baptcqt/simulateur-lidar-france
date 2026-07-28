@@ -4,24 +4,26 @@ Prototype web open source centré sur **iTowns** pour explorer les données IGN 
 
 ## État actuel
 
-Le dépôt contient maintenant un vrai premier visualiseur :
+Le dépôt contient maintenant un premier visualiseur IGN stable :
 
 - recherche d'adresse via le service de géocodage de la Géoplateforme ;
 - déplacement automatique de la caméra vers le premier résultat ;
-- démarrage en **Satellite IGN 2D du dessus**, plus stable et plus lisible ;
-- choix entre trois fonds de carte : Satellite IGN, Plan IGN / topo et iTowns neutre ;
-- bascule d'angle entre **2D du dessus** et **3D légère** ;
+- démarrage en **BD topo / Plan IGN**, en vue 2D verticale ;
+- choix entre trois fonds : **BD topo / Plan IGN**, **Satellite IGN** et **fond neutre iTowns** ;
+- bascule d'angle entre **2D verticale du dessus** et **3D légère** ;
 - une seule couche WMTS active à la fois pour limiter la charge réseau/GPU ;
 - serveur FastAPI local qui sert de proxy de géocodage et préparera le cache ;
 - aucune donnée OpenStreetMap.
 
-Ce n'est pas encore un simulateur de drone. C'est le socle de visualisation sur lequel ajouter le LiDAR, le MNT, les filtres et la caméra drone.
+Le bouton **fond neutre iTowns** ne charge ni image IGN ni LiDAR. iTowns est le moteur de rendu ; le LiDAR HD sera une couche séparée à ajouter dans une étape suivante.
+
+Ce n'est pas encore un simulateur de drone. C'est le socle de visualisation sur lequel ajouter le MNT, le LiDAR HD, les filtres et la caméra drone.
 
 ## Objectif du MVP
 
 - ouvrir une zone en France depuis une adresse ou des coordonnées ;
 - afficher un globe/terrain iTowns ;
-- basculer entre orthophoto IGN, Plan IGN et vue neutre ;
+- basculer entre Plan IGN, orthophoto IGN et fond neutre ;
 - préparer l'ajout du MNT, du LiDAR HD et de CoSIA ;
 - naviguer avec une caméra libre ;
 - exposer un petit serveur local pour le cache, les fichiers locaux et les futurs traitements PDAL.
@@ -79,10 +81,10 @@ scripts/windows/     installation et lancement Surface Pro 9
 
 ## Roadmap
 
-1. Recherche adresse + vues Satellite / Plan IGN / iTowns.
+1. Recherche adresse + vues Plan IGN / Satellite / fond neutre.
 2. Stabilisation navigation 2D/3D et gestion des erreurs de tuiles.
 3. Ajout MNT / terrain IGN réel.
-4. Chargement COPC/Entwine et filtres LiDAR.
+4. Chargement LiDAR HD COPC/Entwine et filtres LiDAR.
 5. Caméra type drone et manette.
 6. Reconstruction bâtiments/arbres.
 7. Physique simplifiée.
