@@ -5,9 +5,9 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen, urlretrieve
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, HttpUrl
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +20,7 @@ GEOCODING_SEARCH_URL = "https://data.geopf.fr/geocodage/search"
 LIDAR_WFS_URL = "https://data.geopf.fr/wfs/ows"
 LIDAR_TILE_TYPENAME = "IGNF_NUAGES-DE-POINTS-LIDAR-HD:dalle"
 LIDAR_DOWNLOAD_PREFIX = "https://data.geopf.fr/telechargement/download/"
+RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
 
 app = FastAPI(title="Simulateur LiDAR France API", version="0.3.1")
 app.add_middleware(
@@ -27,7 +28,8 @@ app.add_middleware(
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
     allow_credentials=False,
     allow_methods=["GET", "POST"],
-    allow_headers=["*"],
+    allow_headers=["*", "Range"],
+    expose_headers=["Accept-Ranges", "Content-Length", "Content-Range"],
 )
 
 
@@ -79,11 +81,7 @@ def is_copc_url(value: str) -> bool:
 
 
 def find_download_url(value: object) -> str | None:
-    """Trouve une URL LAZ/COPC dans une réponse WFS, en préférant COPC.
-
-    Les propriétés WFS ne sont pas toujours homogènes : selon les lots, l'URL peut
-    être un champ direct, un lien imbriqué ou une chaîne parmi d'autres métadonnées.
-    """
+    """Trouve une URL LAZ/COPC dans une réponse WFS, en préférant COPC."""
     if isinstance(value, str):
         trimmed = value.strip()
         return trimmed if is_laz_url(trimmed) else None
@@ -111,6 +109,62 @@ def safe_filename_from_url(url: str) -> str:
     if not name.lower().endswith(".laz"):
         raise HTTPException(status_code=400, detail="URL LiDAR invalide")
     return name
+
+
+def iter_file_range(path: Path, start: int, end: int, chunk_size: int = 1024 * 1024):
+    with path.open("rb") as handle:
+        handle.seek(start)
+        remaining = end - start + 1
+        while remaining > 0:
+            data = handle.read(min(chunk_size, remaining))
+            if not data:
+                break
+            remaining -= len(data)
+            yield data
+
+
+def range_response(path: Path, range_header: str | None):
+    size = path.stat().st_size
+    common_headers = {
+        "Accept-Ranges": "bytes",
+        "Access-Control-Expose-Headers": "Accept-Ranges, Content-Length, Content-Range",
+    }
+
+    if not range_header:
+        return FileResponse(path, media_type="application/octet-stream", headers=common_headers)
+
+    match = RANGE_RE.fullmatch(range_header.strip())
+    if not match:
+        raise HTTPException(status_code=416, detail="Range invalide", headers={"Content-Range": f"bytes */{size}"})
+
+    start_raw, end_raw = match.groups()
+    if start_raw == "" and end_raw == "":
+        raise HTTPException(status_code=416, detail="Range vide", headers={"Content-Range": f"bytes */{size}"})
+
+    if start_raw == "":
+        suffix_length = int(end_raw)
+        start = max(size - suffix_length, 0)
+        end = size - 1
+    else:
+        start = int(start_raw)
+        end = int(end_raw) if end_raw else size - 1
+
+    if start >= size or end < start:
+        raise HTTPException(status_code=416, detail="Range hors fichier", headers={"Content-Range": f"bytes */{size}"})
+
+    end = min(end, size - 1)
+    length = end - start + 1
+    headers = {
+        **common_headers,
+        "Content-Range": f"bytes {start}-{end}/{size}",
+        "Content-Length": str(length),
+    }
+    return StreamingResponse(
+        iter_file_range(path, start, end),
+        status_code=206,
+        media_type="application/octet-stream",
+        headers=headers,
+    )
 
 
 @app.get("/geocode/search")
@@ -175,7 +229,7 @@ def lidar_tiles(
 
 
 @app.post("/lidar/download")
-def lidar_download(payload: LidarDownloadRequest) -> dict[str, str]:
+def lidar_download(payload: LidarDownloadRequest) -> dict[str, str | int]:
     """Télécharge une dalle LiDAR dans data/lidar puis renvoie son URL locale."""
     url = str(payload.url)
     if not url.startswith(LIDAR_DOWNLOAD_PREFIX):
@@ -185,15 +239,17 @@ def lidar_download(payload: LidarDownloadRequest) -> dict[str, str]:
 
     filename = safe_filename_from_url(url)
     target = LIDAR_DIR / filename
+    status = "cached"
     if not target.exists():
+        status = "downloaded"
         try:
             urlretrieve(url, target)
-        except Exception as exc:  # noqa: BLE001 - erreur lisible côté interface
+        except Exception as exc:  # noqa: BLE001 - on remonte une erreur HTTP lisible côté interface
             if target.exists():
                 target.unlink(missing_ok=True)
             raise HTTPException(status_code=502, detail=f"Téléchargement impossible : {exc}") from exc
 
-    return {"filename": filename, "path": f"/files/lidar/{filename}"}
+    return {"filename": filename, "path": f"/files/lidar/{filename}", "sizeBytes": target.stat().st_size, "status": status}
 
 
 @app.get("/lidar/files")
@@ -202,8 +258,8 @@ def lidar_files() -> dict[str, list[str]]:
 
 
 @app.get("/files/{relative_path:path}")
-def get_file(relative_path: str) -> FileResponse:
+def get_file(relative_path: str, range: str | None = Header(default=None)):
     requested = (DATA_DIR / relative_path).resolve()
     if DATA_DIR.resolve() not in requested.parents or not requested.is_file():
         raise HTTPException(status_code=404, detail="Fichier introuvable")
-    return FileResponse(requested)
+    return range_response(requested, range)
