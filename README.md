@@ -4,32 +4,30 @@ Prototype web open source centré sur **iTowns** pour explorer les données IGN 
 
 ## État actuel
 
-Le dépôt fournit un visualiseur IGN utilisable :
+Le dépôt fournit un visualiseur IGN avec :
 
 - recherche d’adresse via la Géoplateforme ;
-- vues Plan IGN, orthophoto IGN et iTowns avancée ;
+- fonds Plan IGN et orthophoto IGN ;
 - navigation 2D verticale ou 3D légère ;
 - sélection rectangulaire d’une zone ;
-- recherche des dalles LiDAR HD IGN ;
-- détection des fichiers COPC ;
-- téléchargement local asynchrone avec progression et annulation ;
-- service HTTP local compatible avec les requêtes `Range` utilisées par COPC ;
-- diagnostic du chargement : en-tête LAS, métadonnées, octree, caméra et nombre de points réellement rendus.
+- recherche automatique de la dalle LiDAR correspondante ;
+- un seul bouton **Afficher le LiDAR** ;
+- téléchargement et cache local transparents ;
+- service HTTP local compatible avec les lectures partielles `Range` de COPC ;
+- vérification interne que des points sont réellement rendus dans iTowns.
 
-Ce n’est pas encore un simulateur de drone. Le jalon actuel consiste à rendre l’accès COPC fiable et observable avant d’ajouter le MNT, les filtres et les traitements de reconstruction.
+Ce n’est pas encore un simulateur de drone. Le jalon actuel consiste à obtenir un affichage COPC simple et fiable avant d’ajouter le MNT, les filtres et la reconstruction.
 
-## Parcours LiDAR recommandé
+## Parcours LiDAR
 
 1. Rechercher une commune ou une adresse.
-2. Sélectionner une zone rectangulaire.
-3. Rechercher les dalles LiDAR IGN.
-4. Sur une dalle COPC, cliquer sur **Télécharger et afficher**.
-5. Suivre le téléchargement et le diagnostic COPC.
-6. Considérer le chargement réussi uniquement lorsque l’interface indique un nombre de points visible supérieur à zéro.
+2. Cliquer sur **Sélectionner une zone** et tracer un petit rectangle.
+3. Attendre l’indication **Dalle LiDAR trouvée**.
+4. Cliquer sur **Afficher le LiDAR**.
 
-Le bouton **Essai direct** reste expérimental : il dépend du CORS et du support des requêtes `Range` du serveur distant.
+L’application choisit automatiquement la dalle COPC contenant le centre de la sélection. Le téléchargement local et les vérifications techniques restent masqués dans l’interface.
 
-Les dalles LAZ non-COPC sont détectées mais ne sont pas encore affichées. Elles devront être converties en COPC, par exemple avec PDAL, avant leur utilisation dans iTowns.
+Les dalles LAZ non-COPC sont détectées mais ne sont pas encore affichées. Elles devront être converties en COPC avant leur utilisation dans iTowns.
 
 ## Installation Windows 11
 
@@ -41,7 +39,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\scripts\windows\run.ps1
 ```
 
-Puis ouvrir `http://localhost:5173`.
+Le lanceur arrête les anciennes instances du projet sur les ports 5173 et 8000, attend que les deux services soient prêts, puis ouvre la version courante dans le navigateur.
 
 ## Installation manuelle
 
@@ -83,7 +81,7 @@ VITE_API_URL=http://127.0.0.1:8000
 ## Architecture
 
 ```text
-web/                 interface iTowns, sélection et diagnostic COPC
+web/                 interface cartographique et chargement COPC iTowns
 server/              proxy IGN, téléchargements asynchrones et fichiers Range HTTP
 tests/               tests de l’API locale et du service de fichiers
 configs/             catalogue logique des couches IGN
@@ -93,7 +91,7 @@ scripts/windows/     installation et lancement Windows
 
 ## Roadmap
 
-1. Chargement COPC fiable et observable.
+1. Affichage COPC simple et fiable.
 2. Ajout du MNT / terrain IGN réel.
 3. Filtres LiDAR : classes, altitude, densité et taille des points.
 4. Réintégration du pipeline de reconstruction et des exports GLB/Godot.
