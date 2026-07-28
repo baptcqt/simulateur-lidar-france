@@ -1,15 +1,17 @@
 {
   "name": "simulateur-lidar-france-web",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
+    "postinstall": "node scripts/copy-laz-perf.mjs",
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {
     "itowns": "2.46.0",
+    "laz-perf": "0.0.6",
     "proj4": "2.19.3",
     "three": "0.174.0"
   },
