@@ -102,6 +102,12 @@ function Wait-ForPdalGateway {
     throw 'La passerelle PDAL répond, mais PDAL n’est pas visible par le serveur. Relancez scripts\windows\install-pdal.ps1 puis run.ps1.'
 }
 
+function Escape-ForSingleQuotedPowerShellString {
+    param([AllowNull()][string]$Value)
+    if ($null -eq $Value) { return '' }
+    return $Value.Replace("'", "''")
+}
+
 Write-Host 'Synchronisation des dépendances iTowns et du décodeur LiDAR...'
 & npm install --prefix web --no-audit --no-fund
 if ($LASTEXITCODE -ne 0) { throw 'L’installation des dépendances web a échoué.' }
@@ -116,19 +122,38 @@ Stop-ProjectListener -Port 8000
 Stop-ProjectListener -Port 5173
 Start-Sleep -Milliseconds 700
 
-$PdalExeForServer = ''
-if ($Env:SIMULATEUR_PDAL_EXE) {
-    $PdalExeForServer = $Env:SIMULATEUR_PDAL_EXE
-}
-$EscapedPath = $Env:PATH.Replace("'", "''")
-$EscapedPdalExe = $PdalExeForServer.Replace("'", "''")
-$EscapedRoot = $Root.Replace("'", "''")
-$EscapedPython = $VenvPython.Replace("'", "''")
-$ApiCommand = "chcp.com 65001 > `$null; Set-Location '$EscapedRoot'; `$Env:PATH = '$EscapedPath'; `$Env:SIMULATEUR_PDAL_EXE = '$EscapedPdalExe'; & '$EscapedPython' -m uvicorn server.main:app --reload --port 8000"
-$WebCommand = "chcp.com 65001 > `$null; Set-Location '$EscapedRoot'; npm run dev --prefix web"
+$RuntimeDir = Join-Path $Root '.runtime'
+New-Item -ItemType Directory -Force -Path $RuntimeDir | Out-Null
+$ApiScript = Join-Path $RuntimeDir 'start-api.ps1'
+$WebScript = Join-Path $RuntimeDir 'start-web.ps1'
 
-Start-Process powershell -ArgumentList @('-NoExit', '-NoProfile', '-Command', $ApiCommand)
-Start-Process powershell -ArgumentList @('-NoExit', '-NoProfile', '-Command', $WebCommand)
+$EscapedRoot = Escape-ForSingleQuotedPowerShellString $Root
+$EscapedPath = Escape-ForSingleQuotedPowerShellString $Env:PATH
+$EscapedPython = Escape-ForSingleQuotedPowerShellString $VenvPython
+$EscapedPdalExe = Escape-ForSingleQuotedPowerShellString $Env:SIMULATEUR_PDAL_EXE
+
+$ApiScriptContent = @"
+`$ErrorActionPreference = 'Stop'
+chcp.com 65001 > `$null
+Set-Location '$EscapedRoot'
+`$Env:PATH = '$EscapedPath'
+`$Env:PYTHONPATH = '$EscapedRoot'
+`$Env:SIMULATEUR_PDAL_EXE = '$EscapedPdalExe'
+& '$EscapedPython' -m uvicorn server.main:app --reload --port 8000
+"@
+
+$WebScriptContent = @"
+`$ErrorActionPreference = 'Stop'
+chcp.com 65001 > `$null
+Set-Location '$EscapedRoot'
+npm run dev --prefix web
+"@
+
+Set-Content -Path $ApiScript -Value $ApiScriptContent -Encoding UTF8
+Set-Content -Path $WebScript -Value $WebScriptContent -Encoding UTF8
+
+Start-Process powershell -ArgumentList @('-NoExit', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$ApiScript`"")
+Start-Process powershell -ArgumentList @('-NoExit', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$WebScript`"")
 
 Wait-ForUrl -Url 'http://127.0.0.1:8000/health' -Name 'API LiDAR'
 Wait-ForUrl -Url 'http://127.0.0.1:8000/local-lidar/files' -Name 'Accès aux dalles locales'
