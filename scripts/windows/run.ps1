@@ -1,6 +1,7 @@
 param()
 
 $ErrorActionPreference = 'Stop'
+chcp.com 65001 > $null
 $Utf8 = [System.Text.UTF8Encoding]::new($false)
 [Console]::InputEncoding = $Utf8
 [Console]::OutputEncoding = $Utf8
@@ -17,12 +18,28 @@ if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
     throw 'Node.js et npm sont requis.'
 }
 
-$Pdal = Get-Command pdal -ErrorAction SilentlyContinue
+function Enable-ProjectPdal {
+    $LocalEnv = Join-Path $Root '.pdal-env'
+    $LocalPdal = Join-Path $LocalEnv 'Library\bin\pdal.exe'
+    if (Test-Path $LocalPdal) {
+        $Env:PATH = @(
+            (Join-Path $LocalEnv 'Library\bin'),
+            (Join-Path $LocalEnv 'Scripts'),
+            (Join-Path $LocalEnv 'Library\usr\bin'),
+            $Env:PATH
+        ) -join [System.IO.Path]::PathSeparator
+        return Get-Command pdal -ErrorAction SilentlyContinue
+    }
+
+    return Get-Command pdal -ErrorAction SilentlyContinue
+}
+
+$Pdal = Enable-ProjectPdal
 if ($Pdal) {
     Write-Host "PDAL détecté : $($Pdal.Source)"
     & pdal --version
 } else {
-    Write-Warning 'PDAL est introuvable. La carte démarrera, mais le crop/nettoyage LiDAR échouera tant que PDAL n’est pas installé et accessible dans le PATH.'
+    Write-Warning 'PDAL est introuvable. Exécutez scripts\windows\install-pdal.ps1 une fois, puis relancez run.ps1 pour activer le crop/nettoyage LiDAR.'
 }
 
 function Stop-ProjectListener {
@@ -78,8 +95,8 @@ Stop-ProjectListener -Port 8000
 Stop-ProjectListener -Port 5173
 Start-Sleep -Milliseconds 700
 
-$ApiCommand = "Set-Location '$Root'; & '$VenvPython' -m uvicorn server.main:app --reload --port 8000"
-$WebCommand = "Set-Location '$Root'; npm run dev --prefix web"
+$ApiCommand = "chcp.com 65001 > `$null; Set-Location '$Root'; `$Env:PATH = '$Env:PATH'; & '$VenvPython' -m uvicorn server.main:app --reload --port 8000"
+$WebCommand = "chcp.com 65001 > `$null; Set-Location '$Root'; npm run dev --prefix web"
 
 Start-Process powershell -ArgumentList @('-NoExit', '-NoProfile', '-Command', $ApiCommand)
 Start-Process powershell -ArgumentList @('-NoExit', '-NoProfile', '-Command', $WebCommand)
