@@ -12,10 +12,35 @@ type CopcLayerLike = {
   };
 };
 
+type RuntimeState = {
+  view?: any;
+  layers: Map<string, any>;
+};
+
+declare global {
+  interface Window {
+    __SIM_ITOWNS__?: RuntimeState;
+  }
+}
+
 const REDIRECT_FLAG = Symbol.for('simulateur-lidar-france.itowns-copc-standalone');
 const viewPrototype = itowns.View.prototype as any;
 const isStandaloneViewer = window.location.pathname.endsWith('/lidar.html');
 let redirecting = false;
+
+function runtimeState(): RuntimeState {
+  if (!window.__SIM_ITOWNS__) window.__SIM_ITOWNS__ = { layers: new Map<string, any>() };
+  return window.__SIM_ITOWNS__;
+}
+
+function rememberMainView(view: any, layer?: any): void {
+  if (isStandaloneViewer) return;
+  if (!view?.isGlobeView) return;
+  const runtime = runtimeState();
+  runtime.view = view;
+  if (layer?.id) runtime.layers.set(layer.id, layer);
+  window.dispatchEvent(new CustomEvent('simulateur:map-view-ready'));
+}
 
 function openStandaloneViewer(layer: CopcLayerLike): Promise<never> {
   const sourceUrl = layer.source?.url;
@@ -46,10 +71,13 @@ function openStandaloneViewer(layer: CopcLayerLike): Promise<never> {
   return new Promise<never>(() => undefined);
 }
 
+runtimeState();
+
 if (!isStandaloneViewer && !viewPrototype[REDIRECT_FLAG]) {
   const originalAddLayer = viewPrototype.addLayer;
 
   viewPrototype.addLayer = async function addLayerWithStandaloneCopc(layer: CopcLayerLike, ...args: unknown[]) {
+    rememberMainView(this, layer);
     if (layer?.isCopcLayer) {
       if (layer.source?.whenReady) await layer.source.whenReady;
       return openStandaloneViewer(layer);
