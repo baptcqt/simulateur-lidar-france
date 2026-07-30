@@ -116,10 +116,16 @@ Stop-ProjectListener -Port 8000
 Stop-ProjectListener -Port 5173
 Start-Sleep -Milliseconds 700
 
+$PdalExeForServer = ''
+if ($Env:SIMULATEUR_PDAL_EXE) {
+    $PdalExeForServer = $Env:SIMULATEUR_PDAL_EXE
+}
 $EscapedPath = $Env:PATH.Replace("'", "''")
-$EscapedPdalExe = ($Env:SIMULATEUR_PDAL_EXE ?? '').Replace("'", "''")
-$ApiCommand = "chcp.com 65001 > `$null; Set-Location '$Root'; `$Env:PATH = '$EscapedPath'; `$Env:SIMULATEUR_PDAL_EXE = '$EscapedPdalExe'; & '$VenvPython' -m uvicorn server.main:app --reload --port 8000"
-$WebCommand = "chcp.com 65001 > `$null; Set-Location '$Root'; npm run dev --prefix web"
+$EscapedPdalExe = $PdalExeForServer.Replace("'", "''")
+$EscapedRoot = $Root.Replace("'", "''")
+$EscapedPython = $VenvPython.Replace("'", "''")
+$ApiCommand = "chcp.com 65001 > `$null; Set-Location '$EscapedRoot'; `$Env:PATH = '$EscapedPath'; `$Env:SIMULATEUR_PDAL_EXE = '$EscapedPdalExe'; & '$EscapedPython' -m uvicorn server.main:app --reload --port 8000"
+$WebCommand = "chcp.com 65001 > `$null; Set-Location '$EscapedRoot'; npm run dev --prefix web"
 
 Start-Process powershell -ArgumentList @('-NoExit', '-NoProfile', '-Command', $ApiCommand)
 Start-Process powershell -ArgumentList @('-NoExit', '-NoProfile', '-Command', $WebCommand)
