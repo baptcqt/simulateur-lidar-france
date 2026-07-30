@@ -42,11 +42,14 @@ Le lanceur ajoute automatiquement `.pdal-env\Library\bin` au `PATH` de l’API.
 
 ## Réutiliser une dalle téléchargée
 
-Le bloc repliable **Dalles déjà téléchargées** permet de travailler sans nouvelle recherche IGN :
+Le bloc repliable **Dalles déjà téléchargées** permet de travailler sans nouvelle recherche IGN tout en conservant le même flux PDAL :
 
 - la dalle `.copc.laz` la plus récente de `data/lidar` est sélectionnée automatiquement ;
-- **Afficher la dalle enregistrée** l’ouvre directement dans la vue 3D ;
-- **Choisir un fichier…** ouvre la boîte de dialogue Windows, copie le fichier choisi dans `data/lidar`, puis l’affiche ;
+- **Placer cette dalle sur la carte** lit seulement l’emprise COPC, puis recentre la carte IGN sur cette dalle ;
+- le fond de carte reste celui choisi par l’utilisateur, BD topo / Plan IGN ou satellite ;
+- l’utilisateur trace ensuite une zone sur la carte comme d’habitude ;
+- **Afficher le LiDAR** utilise la dalle locale déjà présente, puis lance le crop/nettoyage PDAL sur la sélection ;
+- **Choisir un fichier…** copie un fichier `.copc.laz` externe dans `data/lidar`, le place sur la carte, puis le rend disponible pour le même flux ;
 - **Ouvrir le dossier** ouvre `data/lidar` dans l’Explorateur Windows.
 
 Seuls les fichiers `.copc.laz` sont acceptés, car iTowns doit pouvoir lire l’octree et les portions compressées du fichier.
@@ -80,13 +83,11 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 Le lanceur :
 
-- force la console en UTF-8 ;
 - vérifie les dépendances ;
 - prépare le décodeur LiDAR local ;
-- ajoute PDAL local au `PATH` si `.pdal-env` existe ;
 - ferme les anciennes instances qui occupent les ports 8000 et 5173 ;
 - démarre l’API et Vite ;
-- attend que l’API, l’interface et le fichier WASM répondent avant d’ouvrir le navigateur.
+- attend que l’API, l’interface, PDAL et le fichier WASM répondent avant d’ouvrir le navigateur.
 
 ## Installation manuelle
 
@@ -96,8 +97,9 @@ python -m venv .venv
 pip install -r server\requirements.txt
 npm install --prefix web
 node web\scripts\copy-laz-perf.mjs
-.\scripts\windows\install-pdal.ps1
 ```
+
+PDAL doit aussi être accessible dans le `PATH` de l’API pour activer le crop et les volumes LiDAR.
 
 Dans deux terminaux :
 
@@ -114,7 +116,7 @@ python -m pytest -q
 npm run build --prefix web
 ```
 
-La CI exécute les tests serveur et le build Vite sur chaque push et pull request. Les tests PDAL unitaires vérifient la génération du pipeline et des volumes sans lancer de traitement lourd.
+La CI exécute les tests serveur et le build Vite sur chaque push et pull request.
 
 ## Configuration
 
@@ -132,28 +134,25 @@ VITE_API_URL=http://127.0.0.1:8000
 ```text
 web/                 carte IGN, vue terrain 3D et sélection de fichiers locaux
 web/scripts/         préparation et vérification des ressources WebAssembly
-server/              proxy IGN, cache COPC, traitement PDAL et service Range HTTP
+server/              proxy IGN, cache COPC, import local, PDAL et service Range HTTP
 tests/               tests de l’API locale
 configs/             catalogue logique des couches IGN
 data/lidar/          dalles COPC locales ignorées par Git
-data/processed/      zones PDAL traitées ignorées par Git
+data/processed/      zones traitées PDAL ignorées par Git
 scripts/windows/     installation et lancement Windows
 ```
 
 ## Roadmap
 
 1. **Terminé :** lecture, décompression et rendu des dalles COPC IGN.
-2. **Terminé :** vue iTowns terrain/LiDAR avec MNT, classification et outils.
-3. **En cours :** crop PDAL exact, nettoyage LiDAR et profils de densité.
-4. **En cours :** volumes bâtiment simplifiés dérivés du LiDAR seul.
-5. Ajouter terrain simplifié sans orthophoto comme rendu cible.
-6. Ajouter arbres, obstacles, collisions et matériaux simples.
-7. Réintégrer les exports GLB/Godot.
-8. Ajouter une caméra type drone et la manette.
-9. Ajouter une passerelle PX4/MAVLink.
+2. **En cours :** crop PDAL réel, nettoyage, volumes bâtiments LiDAR et rendu simulation simplifiée.
+3. Améliorer le monde simplifié : sol maillé, eau, végétation, routes et collisions.
+4. Réintégrer les exports GLB/Godot.
+5. Ajouter une caméra type drone et la manette.
+6. Ajouter une passerelle PX4/MAVLink.
 
 ## Limites
 
-Ce dépôt est un visualiseur géospatial expérimental et un générateur de scène en construction. Il ne garantit ni l’actualité du terrain réel ni la sécurité d’un vol.
+Ce dépôt est un visualiseur géospatial expérimental. Il ne garantit ni l’actualité du terrain réel ni la sécurité d’un vol.
 
 Licence : MIT.
