@@ -5,6 +5,7 @@ import './style.css';
 type BaseMode = 'topo' | 'satellite';
 type CameraMode = 'flat' | 'oblique';
 type TileState = 'idle' | 'searching' | 'ready' | 'loading' | 'success' | 'warning' | 'error';
+type ProcessProfile = 'fluid' | 'balanced' | 'detailed';
 type BBox4326 = { minLon: number; minLat: number; maxLon: number; maxLat: number };
 type Bounds4326 = BBox4326;
 
@@ -36,13 +37,22 @@ type DownloadJob = {
   error?: string | null;
 };
 
+type ProcessJob = {
+  id: string;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  phase?: string;
+  path?: string | null;
+  buildingsPath?: string | null;
+  buildingCount?: number;
+  pointBudgetHint?: number;
+  error?: string | null;
+};
+
 type SelectedLidarTile = {
   label: string;
   url: string;
   bounds: Bounds4326 | null;
 };
-
-type RenderStats = { points: number; nodes: number };
 
 const app = document.querySelector<HTMLDivElement>('#app');
 if (!app) throw new Error('Élément #app introuvable');
@@ -50,7 +60,7 @@ if (!app) throw new Error('Élément #app introuvable');
 app.innerHTML = `
   <aside class="panel">
     <h1>Simulateur LiDAR France</h1>
-    <p>Carte IGN et affichage natif des nuages de points avec iTowns.</p>
+    <p>Carte IGN, sélection LiDAR et génération simplifiée depuis le nuage de points.</p>
 
     <form id="address-form" class="block compact-block">
       <label for="address">Rechercher un lieu</label>
@@ -76,8 +86,17 @@ app.innerHTML = `
 
     <section class="block lidar-block">
       <h2>LiDAR IGN</h2>
-      <p class="hint">Sélectionnez une zone. La dalle correspondante sera recherchée automatiquement.</p>
+      <p class="hint">Sélectionnez une zone. La dalle sera téléchargée puis cropée/nettoyée par PDAL.</p>
       <button id="select-rectangle" type="button">Sélectionner une zone</button>
+
+      <label class="control-row compact-process-profile" for="process-profile">
+        <span>Profil simulateur</span>
+        <select id="process-profile">
+          <option value="fluid">Fluide</option>
+          <option value="balanced" selected>Équilibré</option>
+          <option value="detailed">Détaillé</option>
+        </select>
+      </label>
 
       <div id="tile-status" class="tile-status idle" aria-live="polite">
         <span class="state-dot" aria-hidden="true"></span>
@@ -111,19 +130,18 @@ function requireElement<T extends Element>(selector: string): T {
   return element;
 }
 
-const viewerDiv = requireElement<HTMLDivElement>('#viewer');
 const mapSurface = requireElement<HTMLDivElement>('#map-surface');
 const lidarSurface = requireElement<HTMLDivElement>('#lidar-surface');
-
-const statusOutput = document.querySelector<HTMLDivElement>('#status');
-const searchResults = document.querySelector<HTMLDivElement>('#search-results');
-const tileStatus = document.querySelector<HTMLDivElement>('#tile-status');
-const selectRectangleButton = document.querySelector<HTMLButtonElement>('#select-rectangle');
-const displayLidarButton = document.querySelector<HTMLButtonElement>('#display-lidar');
-const returnMapButton = document.querySelector<HTMLButtonElement>('#return-map');
-const loadProgress = document.querySelector<HTMLProgressElement>('#load-progress');
-const selectionOverlay = document.querySelector<HTMLDivElement>('#selection-overlay');
-const selectionRect = document.querySelector<HTMLDivElement>('#selection-rect');
+const statusOutput = requireElement<HTMLDivElement>('#status');
+const searchResults = requireElement<HTMLDivElement>('#search-results');
+const tileStatus = requireElement<HTMLDivElement>('#tile-status');
+const selectRectangleButton = requireElement<HTMLButtonElement>('#select-rectangle');
+const displayLidarButton = requireElement<HTMLButtonElement>('#display-lidar');
+const returnMapButton = requireElement<HTMLButtonElement>('#return-map');
+const loadProgress = requireElement<HTMLProgressElement>('#load-progress');
+const selectionOverlay = requireElement<HTMLDivElement>('#selection-overlay');
+const selectionRect = requireElement<HTMLDivElement>('#selection-rect');
+const profileSelect = requireElement<HTMLSelectElement>('#process-profile');
 
 const wmtsUrl = (import.meta.env.VITE_IGN_WMTS_URL as string | undefined) ?? 'https://data.geopf.fr/wmts';
 const satelliteLayerName =
@@ -139,9 +157,6 @@ const DEFAULT_RANGE = 2500;
 const FLAT_TILT = 89;
 const OBLIQUE_TILT = 58;
 const NETWORK_TIMEOUT_MS = 20_000;
-const COPC_METADATA_TIMEOUT_MS = 40_000;
-const COPC_LAYER_TIMEOUT_MS = 50_000;
-const COPC_RENDER_TIMEOUT_MS = 60_000;
 
 const placement = {
   coord: new itowns.Coordinates('EPSG:4326', DEFAULT_LON, DEFAULT_LAT),
@@ -150,19 +165,13 @@ const placement = {
   heading: 0,
 };
 
-// iTowns utilise laz-perf pour décompresser les points LAZ. Le fichier WASM est
-// copié dans web/public/laz-perf pendant l'installation et servi localement.
 itowns.LASParser.enableLazPerf('/laz-perf');
 
 const mapView = new itowns.GlobeView(mapSurface, placement);
 let activeBaseLayerId: string | null = null;
-let nativeLidarView: any = null;
-let nativeLidarControls: any = null;
-let nativeLidarLayer: any = null;
 let cameraMode: CameraMode = 'flat';
 let baseLayerSequence = 0;
 let discoverySequence = 0;
-let loadSequence = 0;
 let selectedBBox: BBox4326 | null = null;
 let selectedTile: SelectedLidarTile | null = null;
 let selecting = false;
@@ -173,23 +182,19 @@ let loadingLidar = false;
 let lidarMode = false;
 
 function setStatus(message: string): void {
-  if (statusOutput) statusOutput.textContent = message;
+  statusOutput.textContent = message;
 }
 
 function setTileStatus(state: TileState, title: string, detail?: string): void {
-  if (!tileStatus) return;
   tileStatus.className = `tile-status ${state}`;
   tileStatus.innerHTML = '';
-
   const dot = document.createElement('span');
   dot.className = 'state-dot';
   dot.setAttribute('aria-hidden', 'true');
-
   const content = document.createElement('div');
   const strong = document.createElement('strong');
   strong.textContent = title;
   content.appendChild(strong);
-
   if (detail) {
     const small = document.createElement('span');
     small.textContent = detail;
@@ -199,7 +204,6 @@ function setTileStatus(state: TileState, title: string, detail?: string): void {
 }
 
 function setProgress(downloaded?: number | null, total?: number | null): void {
-  if (!loadProgress) return;
   if (downloaded == null) {
     loadProgress.hidden = true;
     loadProgress.value = 0;
@@ -218,7 +222,7 @@ function setViewerMode(mode: 'map' | 'lidar'): void {
   lidarMode = mode === 'lidar';
   mapSurface.hidden = lidarMode;
   lidarSurface.hidden = !lidarMode;
-  if (returnMapButton) returnMapButton.hidden = !lidarMode;
+  returnMapButton.hidden = !lidarMode;
   document.querySelectorAll<HTMLElement>('.map-controls').forEach((section) => {
     section.classList.toggle('inactive', lidarMode);
   });
@@ -226,30 +230,17 @@ function setViewerMode(mode: 'map' | 'lidar'): void {
 
 function setBusy(busy: boolean): void {
   loadingLidar = busy;
-  if (selectRectangleButton) selectRectangleButton.disabled = busy || lidarMode;
+  selectRectangleButton.disabled = busy || lidarMode;
+  profileSelect.disabled = busy || lidarMode;
   document.querySelectorAll<HTMLInputElement>('input[name="base-mode"], input[name="camera-mode"]').forEach((input) => {
     input.disabled = busy || lidarMode;
   });
-  if (displayLidarButton) {
-    displayLidarButton.disabled = busy || !selectedTile || lidarMode;
-    displayLidarButton.textContent = busy ? 'Ouverture du LiDAR…' : lidarMode ? 'LiDAR affiché' : 'Afficher le LiDAR';
-  }
+  displayLidarButton.disabled = busy || !selectedTile || !selectedBBox || lidarMode;
+  displayLidarButton.textContent = busy ? 'Préparation LiDAR…' : lidarMode ? 'LiDAR affiché' : 'Afficher le LiDAR';
 }
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
-}
-
-async function withTimeout<T>(promise: Promise<T>, milliseconds: number, label: string): Promise<T> {
-  let timer: number | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = window.setTimeout(() => reject(new Error(`${label} : délai dépassé`)), milliseconds);
-  });
-  try {
-    return await Promise.race([promise, timeout]);
-  } finally {
-    if (timer !== undefined) window.clearTimeout(timer);
-  }
 }
 
 async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = NETWORK_TIMEOUT_MS): Promise<Response> {
@@ -308,7 +299,6 @@ async function setBaseMode(mode: BaseMode): Promise<void> {
   if (selectedInput) selectedInput.checked = true;
   await removeActiveBaseLayer();
   if (sequence !== baseLayerSequence) return;
-
   const layerName = mode === 'satellite' ? satelliteLayerName : topoLayerName;
   const format = mode === 'satellite' ? 'image/jpeg' : 'image/png';
   const layerId = `base-${mode}-${sequence}`;
@@ -343,7 +333,6 @@ function setCameraMode(mode: CameraMode): void {
 }
 
 function renderSearchResults(features: GeocodeFeature[]): void {
-  if (!searchResults) return;
   searchResults.innerHTML = '';
   if (features.length === 0) {
     searchResults.textContent = 'Aucun résultat.';
@@ -397,7 +386,6 @@ function screenPointToLonLat(x: number, y: number): { lon: number; lat: number }
 }
 
 function updateSelectionRect(x0: number, y0: number, x1: number, y1: number): void {
-  if (!selectionRect) return;
   selectionRect.style.display = 'block';
   selectionRect.style.left = `${Math.min(x0, x1)}px`;
   selectionRect.style.top = `${Math.min(y0, y1)}px`;
@@ -510,7 +498,7 @@ async function discoverLidarForSelection(): Promise<void> {
   if (tile) {
     selectedTile = tile;
     setTileStatus('ready', 'Dalle LiDAR trouvée', tile.label);
-    setStatus('Dalle trouvée. Vous pouvez afficher le LiDAR.');
+    setStatus('Dalle trouvée. Le prochain affichage utilisera un crop PDAL de la sélection.');
   } else {
     const hasLaz = features.some((feature) => Boolean(feature.downloadUrl ?? findDownloadUrl(feature.properties)));
     setTileStatus('warning', hasLaz ? 'Dalle non affichable' : 'Aucune dalle trouvée',
@@ -549,7 +537,7 @@ async function enableRectangleSelection(): Promise<void> {
   selectedBBox = null;
   selectedTile = null;
   setProgress(null);
-  if (selectionRect) selectionRect.style.display = 'none';
+  selectionRect.style.display = 'none';
   selecting = true;
   draggingSelection = false;
   selectionStart = null;
@@ -580,99 +568,6 @@ async function probeCopcUrl(url: string): Promise<void> {
   if (signature !== 'LASF') throw new Error('Le fichier reçu n’est pas un fichier LAS/COPC valide');
 }
 
-function destroyNativeLidarView(): void {
-  loadSequence += 1;
-  try {
-    nativeLidarView?.dispose?.(true);
-  } catch (error) {
-    console.warn('Nettoyage de la vue LiDAR incomplet', error);
-  }
-  nativeLidarView = null;
-  nativeLidarControls = null;
-  nativeLidarLayer = null;
-  lidarSurface.replaceChildren();
-}
-
-function focusNativeCopc(view: any, controls: any, layer: any): void {
-  const bbox = layer.root?.bbox;
-  if (!bbox) throw new Error('Emprise de la dalle indisponible');
-  const size = bbox.getSize(new THREE.Vector3());
-  const center = bbox.getCenter(new THREE.Vector3());
-  const span = Math.max(size.x, size.y, size.z, 10);
-  const distance = span * 1.5;
-  const camera = view.camera3D;
-  camera.up.set(0, 0, 1);
-  camera.position.set(center.x + distance * 0.65, center.y - distance * 0.65, center.z + distance * 0.65);
-  camera.near = Math.max(span / 10000, 0.1);
-  camera.far = span * 20;
-  camera.lookAt(center);
-  camera.updateProjectionMatrix();
-  controls.groundLevel = bbox.min.z;
-  view.notifyChange(camera);
-}
-
-function countRenderedPoints(layer: any): RenderStats {
-  let points = 0;
-  let nodes = 0;
-  const rootObject = layer.group ?? layer.object3d;
-  rootObject?.traverse((object: any) => {
-    if (!object.isPoints) return;
-    nodes += 1;
-    points += object.geometry?.getAttribute('position')?.count ?? 0;
-  });
-  return { points, nodes };
-}
-
-async function waitForRenderedPoints(view: any, layer: any, sequence: number): Promise<RenderStats> {
-  const startedAt = performance.now();
-  while (performance.now() - startedAt < COPC_RENDER_TIMEOUT_MS) {
-    if (sequence !== loadSequence) throw new Error('Chargement remplacé par une nouvelle opération');
-    const stats = countRenderedPoints(layer);
-    if (stats.points > 0) return stats;
-    view.notifyChange(view.camera3D);
-    await delay(350);
-  }
-  throw new Error('Le décodeur LiDAR n’a produit aucun point visible');
-}
-
-async function openCopcInNativeItowns(url: string, label: string): Promise<RenderStats> {
-  const sequence = ++loadSequence;
-  setTileStatus('loading', 'Lecture du fichier COPC…', label);
-  const source = new itowns.CopcSource({ url, colorDepth: 16 });
-  await withTimeout(Promise.resolve(source.whenReady), COPC_METADATA_TIMEOUT_MS, 'Lecture de la dalle');
-  if (sequence !== loadSequence) throw new Error('Chargement remplacé');
-
-  destroyNativeLidarView();
-  const activeSequence = loadSequence;
-  setViewerMode('lidar');
-  setBusy(true);
-
-  const referenceCrs = source.crs || 'EPSG:2154';
-  const view = new itowns.View(referenceCrs, lidarSurface);
-  const controls = new itowns.PlanarControls(view);
-  view.controls = controls;
-  view.renderer.setClearColor(0x202225);
-
-  const layer = new itowns.CopcLayer('COPC', {
-    source,
-    crs: view.referenceCrs,
-    pointBudget: 2_000_000,
-    pointSize: 3,
-    sseThreshold: 2,
-    mode: itowns.PNTS_MODE.ELEVATION,
-  });
-
-  nativeLidarView = view;
-  nativeLidarControls = controls;
-  nativeLidarLayer = layer;
-
-  await withTimeout(view.addLayer(layer), COPC_LAYER_TIMEOUT_MS, 'Initialisation de la vue iTowns');
-  focusNativeCopc(view, controls, layer);
-  const stats = await waitForRenderedPoints(view, layer, activeSequence);
-  console.info('[iTowns COPC]', { label, crs: referenceCrs, ...stats });
-  return stats;
-}
-
 async function pollDownloadJob(jobId: string): Promise<DownloadJob> {
   while (true) {
     const job = await fetchJson<DownloadJob>(`${apiUrl}/lidar/downloads/${jobId}`);
@@ -688,9 +583,56 @@ async function pollDownloadJob(jobId: string): Promise<DownloadJob> {
   }
 }
 
+function processPhaseLabel(phase?: string): string {
+  if (phase === 'crop-clean') return 'Crop et nettoyage PDAL…';
+  if (phase === 'building-detection') return 'Génération des volumes bâtiment LiDAR…';
+  if (phase === 'cached') return 'Zone traitée déjà disponible.';
+  return 'Préparation PDAL de la sélection…';
+}
+
+async function pollProcessJob(jobId: string): Promise<ProcessJob> {
+  while (true) {
+    const job = await fetchJson<ProcessJob>(`${apiUrl}/lidar/processes/${jobId}`, {}, 30_000);
+    setTileStatus('loading', processPhaseLabel(job.phase), job.buildingCount ? `${job.buildingCount} volume(s) LiDAR détecté(s)` : undefined);
+    if (job.status === 'completed') return job;
+    if (job.status === 'failed') throw new Error(job.error ?? 'Traitement PDAL impossible');
+    await delay(1000);
+  }
+}
+
+async function processSelectedLidar(localPath: string, bbox: BBox4326, profile: ProcessProfile): Promise<ProcessJob> {
+  setTileStatus('loading', 'Préparation PDAL de la sélection…', 'La dalle brute est cropée avant affichage.');
+  const initial = await fetchJson<ProcessJob>(`${apiUrl}/lidar/processes`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: localPath, bbox, profile }),
+  }, 30_000);
+  if (initial.status === 'completed') return initial;
+  return pollProcessJob(initial.id);
+}
+
+async function openProcessedCopc(processedUrl: string, label: string, buildingsUrl?: string | null): Promise<void> {
+  await probeCopcUrl(processedUrl);
+  setTileStatus('loading', 'Ouverture dans iTowns…', 'La visionneuse recevra la zone cropée et les volumes LiDAR.');
+  const source = new itowns.CopcSource({ url: processedUrl, colorDepth: 16 });
+  await source.whenReady;
+  const layer = new itowns.CopcLayer(label, {
+    source,
+    crs: source.crs || 'EPSG:2154',
+    pointBudget: Number(profileSelect.value === 'detailed' ? 3_500_000 : profileSelect.value === 'fluid' ? 750_000 : 1_800_000),
+    pointSize: 2,
+    sseThreshold: 1.2,
+    mode: itowns.PNTS_MODE.CLASSIFICATION,
+  });
+  (layer as any).simulationBuildingsUrl = buildingsUrl ?? undefined;
+  await mapView.addLayer(layer as any);
+}
+
 async function downloadAndDisplaySelectedTile(): Promise<void> {
-  if (!selectedTile) return;
+  if (!selectedTile || !selectedBBox) return;
   const tile = selectedTile;
+  const bbox = selectedBBox;
+  const profile = profileSelect.value as ProcessProfile;
   setBusy(true);
   setTileStatus('loading', 'Préparation de la dalle LiDAR…', tile.label);
   try {
@@ -699,15 +641,15 @@ async function downloadAndDisplaySelectedTile(): Promise<void> {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url: tile.url }),
     });
-    const job = await pollDownloadJob(initial.id);
-    if (!job.path) throw new Error('Le serveur n’a pas fourni le fichier LiDAR');
-    const localUrl = `${apiUrl}${job.path}`;
-    await probeCopcUrl(localUrl);
-    setTileStatus('loading', 'Ouverture dans iTowns…', 'Décompression locale des points LAZ.');
-    const stats = await openCopcInNativeItowns(localUrl, tile.label);
+    const download = await pollDownloadJob(initial.id);
+    if (!download.path) throw new Error('Le serveur n’a pas fourni le fichier LiDAR');
+    const processed = await processSelectedLidar(download.path, bbox, profile);
+    if (!processed.path) throw new Error('Le serveur n’a pas fourni la zone LiDAR traitée');
+    const processedUrl = `${apiUrl}${processed.path}`;
+    const buildingsUrl = processed.buildingsPath ? `${apiUrl}${processed.buildingsPath}` : undefined;
     setProgress(null);
-    setTileStatus('success', 'LiDAR affiché', `${stats.points.toLocaleString('fr-FR')} points visibles`);
-    setStatus('Le LiDAR est affiché par la vue COPC native d’iTowns.');
+    setTileStatus('success', 'Zone LiDAR traitée', `${processed.buildingCount ?? 0} volume(s) bâtiment LiDAR`);
+    await openProcessedCopc(processedUrl, `Sélection LiDAR ${profile}`, buildingsUrl);
   } finally {
     setProgress(null);
     setBusy(false);
@@ -715,7 +657,6 @@ async function downloadAndDisplaySelectedTile(): Promise<void> {
 }
 
 async function returnToMap(): Promise<void> {
-  destroyNativeLidarView();
   setViewerMode('map');
   if (selectedTile) setTileStatus('ready', 'Dalle LiDAR trouvée', selectedTile.label);
   else setTileStatus('idle', 'Aucune zone sélectionnée', 'Sélectionnez une petite zone sur la carte.');
@@ -726,7 +667,8 @@ async function returnToMap(): Promise<void> {
 
 function friendlyError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
-  if (/délai|temps/i.test(message)) return 'Le chargement a pris trop de temps. Réessayez.';
+  if (/PDAL.*introuvable|pdal est introuvable/i.test(message)) return 'PDAL est introuvable. Installez PDAL pour activer le crop/nettoyage LiDAR.';
+  if (/délai|temps/i.test(message)) return 'Le traitement a pris trop de temps. Réessayez avec une zone plus petite ou le profil Fluide.';
   if (/décodeur|aucun point/i.test(message)) return 'Le fichier est ouvert, mais le décodeur LAZ n’a produit aucun point.';
   if (/partielle|206/i.test(message)) return 'Le fichier LiDAR ne peut pas être lu correctement.';
   if (/wasm|webassembly/i.test(message)) return 'Le décodeur LiDAR local n’a pas pu démarrer.';
@@ -756,7 +698,7 @@ function overlayEventPosition(event: PointerEvent): { x: number; y: number } {
   return { x: event.clientX - rect.left, y: event.clientY - rect.top };
 }
 
-selectionOverlay?.addEventListener('pointerdown', (event) => {
+selectionOverlay.addEventListener('pointerdown', (event) => {
   if (!selecting) return;
   event.preventDefault();
   selectionOverlay.setPointerCapture(event.pointerId);
@@ -765,14 +707,14 @@ selectionOverlay?.addEventListener('pointerdown', (event) => {
   updateSelectionRect(selectionStart.x, selectionStart.y, selectionStart.x, selectionStart.y);
 }, { capture: true });
 
-selectionOverlay?.addEventListener('pointermove', (event) => {
+selectionOverlay.addEventListener('pointermove', (event) => {
   if (!draggingSelection || !selectionStart) return;
   event.preventDefault();
   const current = overlayEventPosition(event);
   updateSelectionRect(selectionStart.x, selectionStart.y, current.x, current.y);
 }, { capture: true });
 
-selectionOverlay?.addEventListener('pointerup', (event) => {
+selectionOverlay.addEventListener('pointerup', (event) => {
   if (!draggingSelection || !selectionStart) return;
   event.preventDefault();
   const end = overlayEventPosition(event);
@@ -780,7 +722,7 @@ selectionOverlay?.addEventListener('pointerup', (event) => {
   selectionStart = null;
 }, { capture: true });
 
-selectionOverlay?.addEventListener('pointercancel', () => {
+selectionOverlay.addEventListener('pointercancel', () => {
   stopSelectionMode();
   setTileStatus('idle', 'Sélection annulée', 'Cliquez sur Sélectionner une zone pour recommencer.');
 });
@@ -788,7 +730,7 @@ selectionOverlay?.addEventListener('pointercancel', () => {
 window.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && selecting) {
     stopSelectionMode();
-    if (selectionRect) selectionRect.style.display = 'none';
+    selectionRect.style.display = 'none';
   }
 });
 
@@ -811,9 +753,9 @@ document.querySelector<HTMLFormElement>('#address-form')?.addEventListener('subm
 });
 
 document.querySelector<HTMLButtonElement>('#reset-flat')?.addEventListener('click', () => setCameraMode('flat'));
-selectRectangleButton?.addEventListener('click', () => void enableRectangleSelection().catch(showLoadError));
-displayLidarButton?.addEventListener('click', () => void downloadAndDisplaySelectedTile().catch(showLoadError));
-returnMapButton?.addEventListener('click', () => void returnToMap().catch(showLoadError));
+selectRectangleButton.addEventListener('click', () => void enableRectangleSelection().catch(showLoadError));
+displayLidarButton.addEventListener('click', () => void downloadAndDisplaySelectedTile().catch(showLoadError));
+returnMapButton.addEventListener('click', () => void returnToMap().catch(showLoadError));
 
 document.querySelectorAll<HTMLInputElement>('input[name="base-mode"]').forEach((input) => {
   input.addEventListener('change', () => {
