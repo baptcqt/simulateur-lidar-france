@@ -1,5 +1,8 @@
-import * as THREE from 'three';
 import * as itowns from 'itowns';
+
+const apiUrl = ((import.meta.env.VITE_API_URL as string | undefined) ?? 'http://127.0.0.1:8000').replace(/\/$/, '');
+const COPC_METADATA_TIMEOUT_MS = 40_000;
+const LAMBERT_93 = '+proj=lcc +lat_1=49 +lat_2=44 +lat_0=46.5 +lon_0=3 +x_0=700000 +y_0=6600000 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs +type=crs';
 
 type LocalLidarFile = {
   name: string;
@@ -10,47 +13,60 @@ type LocalLidarFile = {
 
 type LocalFilesResponse = { files: LocalLidarFile[] };
 type LocalState = 'idle' | 'loading' | 'success' | 'error';
-type RenderStats = { points: number; nodes: number };
+type Bounds4326 = { minLon: number; minLat: number; maxLon: number; maxLat: number };
+type LocalTileSource = {
+  file: LocalLidarFile;
+  bounds: Bounds4326;
+  url: string;
+  label: string;
+};
+type PseudoDownloadJob = {
+  id: string;
+  status: 'completed';
+  phase: 'local-cache';
+  filename: string;
+  path: string;
+  bytesDownloaded: number;
+  totalBytes: number;
+  error: null;
+};
 
-const apiUrl = ((import.meta.env.VITE_API_URL as string | undefined) ?? 'http://127.0.0.1:8000').replace(/\/$/, '');
-const COPC_METADATA_TIMEOUT_MS = 40_000;
-const COPC_LAYER_TIMEOUT_MS = 50_000;
-const COPC_RENDER_TIMEOUT_MS = 60_000;
+declare global {
+  interface Window {
+    __SIM_ITOWNS__?: {
+      view?: any;
+      layers: Map<string, any>;
+    };
+  }
+}
 
-let localView: any = null;
-let localControls: any = null;
-let localLayer: any = null;
-let localActive = false;
-let loadSequence = 0;
 let localFiles: LocalLidarFile[] = [];
-let previousDisabled = new Map<HTMLInputElement | HTMLButtonElement | HTMLSelectElement, boolean>();
+let activeLocalTile: LocalTileSource | null = null;
+let fetchBridgeInstalled = false;
+const pseudoDownloadJobs = new Map<string, PseudoDownloadJob>();
 
 function waitForMainInterface(attempt = 0): void {
   const lidarBlock = document.querySelector<HTMLElement>('.lidar-block');
-  const mapSurface = document.querySelector<HTMLDivElement>('#map-surface');
-  const lidarSurface = document.querySelector<HTMLDivElement>('#lidar-surface');
-  if (!lidarBlock || !mapSurface || !lidarSurface) {
+  if (!lidarBlock) {
     if (attempt < 100) window.setTimeout(() => waitForMainInterface(attempt + 1), 50);
     return;
   }
-  initializeLocalLidar(lidarBlock, mapSurface, lidarSurface);
+  initializeLocalLidar(lidarBlock);
 }
 
-function initializeLocalLidar(
-  lidarBlock: HTMLElement,
-  mapSurface: HTMLDivElement,
-  lidarSurface: HTMLDivElement,
-): void {
+function initializeLocalLidar(lidarBlock: HTMLElement): void {
   itowns.LASParser.enableLazPerf('/laz-perf');
+  itowns.CRS.defs('EPSG:2154', LAMBERT_93);
   injectStyles();
+  installLocalFetchBridge();
 
   const panel = document.createElement('details');
   panel.className = 'local-lidar-panel';
   panel.innerHTML = `
     <summary>Dalles déjà téléchargées</summary>
-    <p class="local-lidar-hint">La dalle la plus récente est sélectionnée automatiquement.</p>
+    <p class="local-lidar-hint">Choisissez une dalle locale pour revenir au flux normal : carte IGN, sélection d’une zone, puis crop/nettoyage PDAL.</p>
     <select id="local-lidar-select" aria-label="Dalle LiDAR téléchargée"></select>
-    <button id="open-local-lidar" type="button" disabled>Afficher la dalle enregistrée</button>
+    <button id="open-local-lidar" type="button" disabled>Placer cette dalle sur la carte</button>
     <div class="local-lidar-actions">
       <button id="choose-local-lidar" type="button">Choisir un fichier…</button>
       <button id="open-lidar-folder" type="button">Ouvrir le dossier</button>
@@ -60,15 +76,12 @@ function initializeLocalLidar(
   `;
   lidarBlock.appendChild(panel);
 
-  const select = panel.querySelector<HTMLSelectElement>('#local-lidar-select');
-  const openButton = panel.querySelector<HTMLButtonElement>('#open-local-lidar');
-  const chooseButton = panel.querySelector<HTMLButtonElement>('#choose-local-lidar');
-  const folderButton = panel.querySelector<HTMLButtonElement>('#open-lidar-folder');
-  const fileInput = panel.querySelector<HTMLInputElement>('#local-lidar-file');
-  const localStatus = panel.querySelector<HTMLDivElement>('#local-lidar-status');
-  const returnMapButton = document.querySelector<HTMLButtonElement>('#return-map');
-
-  if (!select || !openButton || !chooseButton || !folderButton || !fileInput || !localStatus || !returnMapButton) return;
+  const select = requirePanelElement<HTMLSelectElement>(panel, '#local-lidar-select');
+  const openButton = requirePanelElement<HTMLButtonElement>(panel, '#open-local-lidar');
+  const chooseButton = requirePanelElement<HTMLButtonElement>(panel, '#choose-local-lidar');
+  const folderButton = requirePanelElement<HTMLButtonElement>(panel, '#open-lidar-folder');
+  const fileInput = requirePanelElement<HTMLInputElement>(panel, '#local-lidar-file');
+  const localStatus = requirePanelElement<HTMLDivElement>(panel, '#local-lidar-status');
 
   const setLocalStatus = (state: LocalState, message: string): void => {
     localStatus.className = `local-lidar-status ${state}`;
@@ -109,98 +122,31 @@ function initializeLocalLidar(
 
   const selectedFile = (): LocalLidarFile | null => localFiles.find((file) => file.name === select.value) ?? null;
 
-  const closeLocalView = (): void => {
-    loadSequence += 1;
+  const activateSelectedFile = async (file: LocalLidarFile): Promise<void> => {
+    openButton.disabled = true;
+    setLocalStatus('loading', `Lecture de l’emprise de ${file.name}…`);
+    setMainTileStatus('loading', 'Lecture de la dalle locale…', 'Préparation de la carte IGN.');
     try {
-      localView?.dispose?.(true);
-    } catch (error) {
-      console.warn('Nettoyage de la dalle locale incomplet', error);
-    }
-    localView = null;
-    localControls = null;
-    localLayer = null;
-    localActive = false;
-    lidarSurface.replaceChildren();
-    lidarSurface.hidden = true;
-    mapSurface.hidden = false;
-    returnMapButton.hidden = true;
-    restoreMainControls(panel);
-    document.querySelectorAll<HTMLElement>('.map-controls').forEach((section) => section.classList.remove('inactive'));
-    const selectionOverlay = document.querySelector<HTMLElement>('#selection-overlay');
-    if (selectionOverlay) selectionOverlay.hidden = false;
-    window.dispatchEvent(new Event('resize'));
-    setMainStatus('Carte IGN active.');
-    const file = selectedFile();
-    if (file) setMainTileStatus('ready', 'Dalle locale prête', file.name);
-  };
-
-  const openFile = async (file: LocalLidarFile): Promise<void> => {
-    if (!lidarSurface.hidden && !localActive) {
-      throw new Error('Revenez à la carte avant d’ouvrir une dalle locale.');
-    }
-
-    const sequence = ++loadSequence;
-    setLocalStatus('loading', `Ouverture de ${file.name}…`);
-    setMainTileStatus('loading', 'Ouverture de la dalle locale…', file.name);
-    const url = new URL(file.path, `${apiUrl}/`).toString();
-    await probeCopc(url);
-
-    const source = new itowns.CopcSource({ url, colorDepth: 16 });
-    await withTimeout(Promise.resolve(source.whenReady), COPC_METADATA_TIMEOUT_MS, 'Lecture de la dalle locale');
-    if (sequence !== loadSequence) throw new Error('Chargement remplacé');
-
-    if (localActive) closeLocalView();
-    const activeSequence = ++loadSequence;
-    localActive = true;
-    saveAndDisableMainControls(panel);
-    document.querySelectorAll<HTMLElement>('.map-controls').forEach((section) => section.classList.add('inactive'));
-    const selectionOverlay = document.querySelector<HTMLElement>('#selection-overlay');
-    if (selectionOverlay) selectionOverlay.hidden = true;
-    mapSurface.hidden = true;
-    lidarSurface.hidden = false;
-    returnMapButton.hidden = false;
-    returnMapButton.disabled = false;
-
-    const referenceCrs = source.crs || 'EPSG:2154';
-    const view = new itowns.View(referenceCrs, lidarSurface);
-    const controls = new itowns.PlanarControls(view);
-    view.controls = controls;
-    view.renderer.setClearColor(0x202225);
-
-    const layer = new itowns.CopcLayer(`COPC-local-${Date.now()}`, {
-      source,
-      crs: view.referenceCrs,
-      pointBudget: 2_000_000,
-      pointSize: 3,
-      sseThreshold: 2,
-      mode: itowns.PNTS_MODE.ELEVATION,
-    });
-
-    localView = view;
-    localControls = controls;
-    localLayer = layer;
-
-    try {
-      await withTimeout(view.addLayer(layer), COPC_LAYER_TIMEOUT_MS, 'Initialisation de la dalle locale');
-      focusCopc(view, controls, layer);
-      const stats = await waitForPoints(view, layer, activeSequence);
-      setLocalStatus('success', `${file.name} — ${stats.points.toLocaleString('fr-FR')} points visibles.`);
-      setMainTileStatus('success', 'Dalle locale affichée', `${stats.points.toLocaleString('fr-FR')} points visibles`);
-      setMainStatus('La dalle enregistrée est affichée dans iTowns.');
-    } catch (error) {
-      closeLocalView();
-      throw error;
+      const source = await inspectLocalCopc(file);
+      activeLocalTile = source;
+      pseudoDownloadJobs.clear();
+      await focusMapOnLocalTile(source);
+      setLocalStatus('success', `${file.name} placée sur la carte. Tracez maintenant une zone à cropper.`);
+      setMainTileStatus('ready', 'Dalle locale prête', 'Sélectionnez une zone puis cliquez sur Afficher le LiDAR.');
+      setMainStatus('La carte est centrée sur la dalle locale. Le prochain affichage passera par PDAL.');
+    } finally {
+      openButton.disabled = localFiles.length === 0;
     }
   };
 
   openButton.addEventListener('click', () => {
     const file = selectedFile();
     if (!file) return;
-    void openFile(file).catch((error: unknown) => {
+    void activateSelectedFile(file).catch((error: unknown) => {
       const message = friendlyError(error);
       setLocalStatus('error', message);
-      setMainTileStatus('error', 'Impossible d’ouvrir la dalle locale', message);
-      setMainStatus(`Erreur LiDAR : ${message}`);
+      setMainTileStatus('error', 'Dalle locale inutilisable', message);
+      setMainStatus(`Erreur dalle locale : ${message}`);
     });
   });
 
@@ -219,7 +165,7 @@ function initializeLocalLidar(
     void importFile(file)
       .then(async (imported) => {
         await refresh(imported.name);
-        await openFile(imported);
+        await activateSelectedFile(imported);
       })
       .catch((error: unknown) => {
         setLocalStatus('error', friendlyError(error));
@@ -235,14 +181,221 @@ function initializeLocalLidar(
       .finally(() => { folderButton.disabled = false; });
   });
 
-  returnMapButton.addEventListener('click', (event) => {
-    if (!localActive) return;
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    closeLocalView();
-  }, true);
-
   void refresh().catch((error: unknown) => setLocalStatus('error', friendlyError(error)));
+}
+
+function installLocalFetchBridge(): void {
+  if (fetchBridgeInstalled) return;
+  fetchBridgeInstalled = true;
+  const originalFetch = window.fetch.bind(window);
+
+  window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const requestUrl = requestUrlString(input);
+    const method = requestMethod(input, init);
+    const url = new URL(requestUrl, window.location.origin);
+
+    if (method === 'GET' && url.pathname === '/lidar/tiles' && activeLocalTile) {
+      const requestedBounds = parseBbox(url.searchParams.get('bbox'));
+      if (requestedBounds && boundsIntersect(activeLocalTile.bounds, requestedBounds)) {
+        return jsonResponse(fakeLidarTileResponse(activeLocalTile));
+      }
+    }
+
+    if (method === 'POST' && url.pathname === '/lidar/downloads' && activeLocalTile) {
+      const requestedUrl = await requestBodyUrl(init?.body);
+      if (requestedUrl && urlTargetsActiveLocalTile(requestedUrl, activeLocalTile)) {
+        const job = createPseudoDownloadJob(activeLocalTile);
+        pseudoDownloadJobs.set(job.id, job);
+        return jsonResponse(job, 202);
+      }
+    }
+
+    const downloadMatch = url.pathname.match(/^\/lidar\/downloads\/([^/]+)$/);
+    if (method === 'GET' && downloadMatch) {
+      const job = pseudoDownloadJobs.get(downloadMatch[1]);
+      if (job) return jsonResponse(job);
+    }
+
+    return originalFetch(input as RequestInfo, init);
+  };
+}
+
+function requestUrlString(input: RequestInfo | URL): string {
+  if (typeof input === 'string') return input;
+  if (input instanceof URL) return input.toString();
+  return input.url;
+}
+
+function requestMethod(input: RequestInfo | URL, init?: RequestInit): string {
+  const method = init?.method ?? (input instanceof Request ? input.method : 'GET');
+  return method.toUpperCase();
+}
+
+async function requestBodyUrl(body: BodyInit | null | undefined): Promise<string | null> {
+  if (typeof body !== 'string') return null;
+  try {
+    const payload = JSON.parse(body) as { url?: string };
+    return typeof payload.url === 'string' ? payload.url : null;
+  } catch {
+    return null;
+  }
+}
+
+function jsonResponse(payload: unknown, status = 200): Response {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+function fakeLidarTileResponse(source: LocalTileSource): { features: unknown[] } {
+  const { bounds } = source;
+  return {
+    features: [{
+      type: 'Feature',
+      id: `local-${source.file.name}`,
+      geometry: {
+        type: 'Polygon',
+        coordinates: [[
+          [bounds.minLon, bounds.minLat],
+          [bounds.maxLon, bounds.minLat],
+          [bounds.maxLon, bounds.maxLat],
+          [bounds.minLon, bounds.maxLat],
+          [bounds.minLon, bounds.minLat],
+        ]],
+      },
+      properties: {
+        name: `Dalle locale — ${source.file.name}`,
+        filename: source.file.name,
+        source: 'local-cache',
+      },
+      downloadUrl: source.url,
+      isCopc: true,
+    }],
+  };
+}
+
+function createPseudoDownloadJob(source: LocalTileSource): PseudoDownloadJob {
+  return {
+    id: `local-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    status: 'completed',
+    phase: 'local-cache',
+    filename: source.file.name,
+    path: source.file.path,
+    bytesDownloaded: source.file.sizeBytes,
+    totalBytes: source.file.sizeBytes,
+    error: null,
+  };
+}
+
+function urlTargetsActiveLocalTile(value: string, source: LocalTileSource): boolean {
+  try {
+    const parsed = new URL(value, window.location.href);
+    return decodeURI(parsed.pathname) === source.file.path;
+  } catch {
+    return value === source.url || value === source.file.path;
+  }
+}
+
+async function inspectLocalCopc(file: LocalLidarFile): Promise<LocalTileSource> {
+  const url = new URL(file.path, `${apiUrl}/`).toString();
+  await probeCopc(url);
+  const source = new itowns.CopcSource({ url, colorDepth: 16 });
+  await withTimeout(Promise.resolve(source.whenReady), COPC_METADATA_TIMEOUT_MS, 'Lecture de l’emprise COPC');
+  const sourceCrs = normalizeSourceCrs(source, file.name);
+  const bounds = boundsFromSourceCube(source, sourceCrs);
+  return { file, url, bounds, label: `Dalle locale — ${file.name}` };
+}
+
+function normalizeSourceCrs(source: any, label: string): string {
+  const upper = label.toUpperCase();
+  if (!source.crs && (upper.includes('LAMB93') || upper.includes('IGN69'))) {
+    source.crs = 'EPSG:2154';
+  }
+  if (source.crs === 'EPSG:2154') itowns.CRS.defs('EPSG:2154', LAMBERT_93);
+  if (!source.crs) throw new Error('Le système de coordonnées de la dalle locale est introuvable.');
+  return source.crs;
+}
+
+function boundsFromSourceCube(source: any, sourceCrs: string): Bounds4326 {
+  const cube = source.info?.cube;
+  if (!Array.isArray(cube) || cube.length < 6 || !cube.slice(0, 6).every(Number.isFinite)) {
+    throw new Error('L’emprise de la dalle locale est indisponible.');
+  }
+  const bounds: Bounds4326 = {
+    minLon: Number.POSITIVE_INFINITY,
+    minLat: Number.POSITIVE_INFINITY,
+    maxLon: Number.NEGATIVE_INFINITY,
+    maxLat: Number.NEGATIVE_INFINITY,
+  };
+  for (const x of [cube[0], cube[3]]) {
+    for (const y of [cube[1], cube[4]]) {
+      const coord = new itowns.Coordinates(sourceCrs, x, y, 0).as('EPSG:4326');
+      bounds.minLon = Math.min(bounds.minLon, coord.longitude);
+      bounds.maxLon = Math.max(bounds.maxLon, coord.longitude);
+      bounds.minLat = Math.min(bounds.minLat, coord.latitude);
+      bounds.maxLat = Math.max(bounds.maxLat, coord.latitude);
+    }
+  }
+  if (!Object.values(bounds).every(Number.isFinite)) {
+    throw new Error('L’emprise de la dalle locale ne peut pas être reprojetée.');
+  }
+  return bounds;
+}
+
+async function focusMapOnLocalTile(source: LocalTileSource): Promise<void> {
+  const view = await waitForMapView();
+  const center = {
+    lon: (source.bounds.minLon + source.bounds.maxLon) / 2,
+    lat: (source.bounds.minLat + source.bounds.maxLat) / 2,
+  };
+  const range = rangeForBounds(source.bounds);
+  const flatMode = document.querySelector<HTMLInputElement>('input[name="camera-mode"][value="flat"]')?.checked ?? true;
+  await view.controls.lookAtCoordinate({
+    coord: new itowns.Coordinates('EPSG:4326', center.lon, center.lat),
+    range,
+    tilt: flatMode ? 89 : 58,
+    heading: 0,
+    time: 650,
+  });
+  view.notifyChange(view.camera3D);
+}
+
+async function waitForMapView(timeoutMs = 30_000): Promise<any> {
+  const startedAt = performance.now();
+  while (performance.now() - startedAt < timeoutMs) {
+    const view = window.__SIM_ITOWNS__?.view;
+    if (view?.controls) return view;
+    await new Promise((resolve) => window.setTimeout(resolve, 250));
+  }
+  throw new Error('La carte iTowns principale n’est pas encore disponible.');
+}
+
+function parseBbox(value: string | null): Bounds4326 | null {
+  if (!value) return null;
+  const parts = value.split(',').map(Number);
+  if (parts.length !== 4 || !parts.every(Number.isFinite)) return null;
+  return {
+    minLon: Math.min(parts[0], parts[2]),
+    minLat: Math.min(parts[1], parts[3]),
+    maxLon: Math.max(parts[0], parts[2]),
+    maxLat: Math.max(parts[1], parts[3]),
+  };
+}
+
+function boundsIntersect(left: Bounds4326, right: Bounds4326): boolean {
+  return left.minLon <= right.maxLon
+    && left.maxLon >= right.minLon
+    && left.minLat <= right.maxLat
+    && left.maxLat >= right.minLat;
+}
+
+function rangeForBounds(bounds: Bounds4326): number {
+  const centerLat = (bounds.minLat + bounds.maxLat) / 2;
+  const metersPerDegreeLon = 111_320 * Math.cos(centerLat * Math.PI / 180);
+  const width = Math.abs(bounds.maxLon - bounds.minLon) * metersPerDegreeLon;
+  const height = Math.abs(bounds.maxLat - bounds.minLat) * 110_540;
+  return Math.min(9_000, Math.max(650, Math.hypot(width, height) * 1.35));
 }
 
 async function importFile(file: File): Promise<LocalLidarFile> {
@@ -281,43 +434,6 @@ async function probeCopc(url: string): Promise<void> {
   if (signature !== 'LASF') throw new Error('Le fichier choisi n’est pas un fichier LAS/COPC valide.');
 }
 
-function focusCopc(view: any, controls: any, layer: any): void {
-  const bbox = layer.root?.bbox;
-  if (!bbox) throw new Error('Emprise de la dalle indisponible.');
-  const size = bbox.getSize(new THREE.Vector3());
-  const center = bbox.getCenter(new THREE.Vector3());
-  const span = Math.max(size.x, size.y, size.z, 10);
-  const distance = span * 1.5;
-  const camera = view.camera3D;
-  camera.up.set(0, 0, 1);
-  camera.position.set(center.x + distance * 0.65, center.y - distance * 0.65, center.z + distance * 0.65);
-  camera.near = Math.max(span / 10000, 0.1);
-  camera.far = span * 20;
-  camera.lookAt(center);
-  camera.updateProjectionMatrix();
-  controls.groundLevel = bbox.min.z;
-  view.notifyChange(camera);
-}
-
-async function waitForPoints(view: any, layer: any, sequence: number): Promise<RenderStats> {
-  const startedAt = performance.now();
-  while (performance.now() - startedAt < COPC_RENDER_TIMEOUT_MS) {
-    if (sequence !== loadSequence) throw new Error('Chargement remplacé');
-    let points = 0;
-    let nodes = 0;
-    const rootObject = layer.group ?? layer.object3d;
-    rootObject?.traverse((object: any) => {
-      if (!object.isPoints) return;
-      nodes += 1;
-      points += object.geometry?.getAttribute('position')?.count ?? 0;
-    });
-    if (points > 0) return { points, nodes };
-    view.notifyChange(view.camera3D);
-    await new Promise((resolve) => window.setTimeout(resolve, 350));
-  }
-  throw new Error('Le décodeur LiDAR n’a produit aucun point visible.');
-}
-
 async function withTimeout<T>(promise: Promise<T>, milliseconds: number, label: string): Promise<T> {
   let timer: number | undefined;
   const timeout = new Promise<never>((_, reject) => {
@@ -330,25 +446,10 @@ async function withTimeout<T>(promise: Promise<T>, milliseconds: number, label: 
   }
 }
 
-function saveAndDisableMainControls(localPanel: HTMLElement): void {
-  previousDisabled.clear();
-  document.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement>('.panel input, .panel button, .panel select')
-    .forEach((control) => {
-      if (localPanel.contains(control) || control.id === 'return-map') return;
-      previousDisabled.set(control, control.disabled);
-      control.disabled = true;
-    });
-}
-
-function restoreMainControls(localPanel: HTMLElement): void {
-  previousDisabled.forEach((disabled, control) => { control.disabled = disabled; });
-  previousDisabled.clear();
-  localPanel.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement>('input, button, select')
-    .forEach((control) => { control.disabled = false; });
-  const openButton = localPanel.querySelector<HTMLButtonElement>('#open-local-lidar');
-  const select = localPanel.querySelector<HTMLSelectElement>('#local-lidar-select');
-  if (openButton) openButton.disabled = localFiles.length === 0;
-  if (select) select.disabled = localFiles.length === 0;
+function requirePanelElement<T extends Element>(panel: HTMLElement, selector: string): T {
+  const element = panel.querySelector<T>(selector);
+  if (!element) throw new Error(`Élément ${selector} introuvable.`);
+  return element;
 }
 
 function setMainStatus(message: string): void {
@@ -388,9 +489,9 @@ function formatBytes(value: number): string {
 
 function friendlyError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
-  if (/délai|temps/i.test(message)) return 'Le chargement a pris trop de temps.';
-  if (/décodeur|aucun point/i.test(message)) return 'Le fichier est ouvert, mais aucun point n’a été produit.';
+  if (/délai|temps/i.test(message)) return 'La lecture de la dalle a pris trop de temps.';
   if (/partielle|206/i.test(message)) return 'Le fichier ne permet pas les lectures partielles nécessaires.';
+  if (/coordonnées|emprise|reprojetée/i.test(message)) return message;
   return message;
 }
 
