@@ -23,44 +23,77 @@
       </header>
 
       <div id="lidar-controls-body">
-        <div class="viewer-actions">
-          <button id="view-3d" type="button">Vue 3D</button>
-          <button id="view-top" type="button">Vue du dessus</button>
-          <button id="view-fit" type="button">Recentrer</button>
-        </div>
+        <section class="control-section">
+          <h2>Caméra</h2>
+          <div class="viewer-actions">
+            <button id="view-3d" type="button">Vue 3D</button>
+            <button id="view-top" type="button">Vue du dessus</button>
+            <button id="view-fit" type="button">Recentrer</button>
+          </div>
+        </section>
 
-        <label class="control-row" for="lidar-render-mode">
-          <span>Rendu des points</span>
-          <select id="lidar-render-mode">
-            <option value="elevation" selected>Relief</option>
-            <option value="classification">Classification</option>
-            <option value="intensity">Intensité</option>
-            <option value="color">Couleurs source</option>
-          </select>
-        </label>
+        <section class="control-section">
+          <h2>Nuage LiDAR</h2>
+          <label class="control-row" for="lidar-render-mode">
+            <span>Rendu des points</span>
+            <select id="lidar-render-mode">
+              <option value="elevation" selected>Relief</option>
+              <option value="classification">Classification</option>
+              <option value="intensity">Intensité</option>
+              <option value="color">Couleurs source</option>
+            </select>
+          </label>
 
-        <label class="control-row" for="lidar-point-size">
-          <span>Taille des points <output id="lidar-point-size-value">1,5</output></span>
-          <input id="lidar-point-size" type="range" min="0.5" max="5" step="0.25" value="1.5" />
-        </label>
+          <label class="control-row" for="lidar-point-size">
+            <span>Taille des points <output id="lidar-point-size-value">1,5</output></span>
+            <input id="lidar-point-size" type="range" min="0.5" max="5" step="0.25" value="1.5" />
+          </label>
 
-        <label class="control-row" for="lidar-opacity">
-          <span>Opacité <output id="lidar-opacity-value">80 %</output></span>
-          <input id="lidar-opacity" type="range" min="0.1" max="1" step="0.05" value="0.8" />
-        </label>
+          <label class="control-row" for="lidar-opacity">
+            <span>Opacité <output id="lidar-opacity-value">80 %</output></span>
+            <input id="lidar-opacity" type="range" min="0.1" max="1" step="0.05" value="0.8" />
+          </label>
 
-        <label class="control-row" for="lidar-point-budget">
-          <span>Densité <output id="lidar-point-budget-value">4,0 M</output></span>
-          <input id="lidar-point-budget" type="range" min="500000" max="6000000" step="250000" value="4000000" />
-        </label>
+          <label class="control-row" for="lidar-point-budget">
+            <span>Densité <output id="lidar-point-budget-value">4,0 M</output></span>
+            <input id="lidar-point-budget" type="range" min="500000" max="6000000" step="250000" value="4000000" />
+          </label>
+        </section>
 
-        <div class="layer-switches">
-          <label><input id="lidar-visible" type="checkbox" checked /> LiDAR</label>
-          <label><input id="ortho-visible" type="checkbox" checked /> Orthophoto</label>
-          <label><input id="terrain-visible" type="checkbox" checked /> Relief MNT</label>
-        </div>
+        <section class="control-section">
+          <h2>Couches</h2>
+          <div class="layer-switches">
+            <label><input id="lidar-visible" type="checkbox" checked /> LiDAR</label>
+            <label><input id="ortho-visible" type="checkbox" checked /> Orthophoto</label>
+            <label><input id="terrain-visible" type="checkbox" checked /> Relief MNT</label>
+          </div>
+        </section>
+
+        <section class="control-section">
+          <h2>Outils iTowns</h2>
+          <div class="tool-actions">
+            <button id="tool-inspect" type="button" aria-pressed="false">Inspecter</button>
+            <button id="tool-measure" type="button" aria-pressed="false">Mesurer</button>
+            <button id="tool-clear" type="button">Effacer</button>
+            <button id="tool-snapshot" type="button">Capture PNG</button>
+          </div>
+          <div id="itowns-tool-result" aria-live="polite">Cliquez sur Inspecter ou Mesurer, puis sur la scène.</div>
+        </section>
+
+        <section class="control-section scene-information">
+          <h2>Informations de scène</h2>
+          <dl>
+            <div><dt>Longitude</dt><dd id="scene-longitude">—</dd></div>
+            <div><dt>Latitude</dt><dd id="scene-latitude">—</dd></div>
+            <div><dt>Altitude</dt><dd id="scene-altitude">—</dd></div>
+            <div><dt>Distance caméra</dt><dd id="scene-range">—</dd></div>
+            <div><dt>Inclinaison</dt><dd id="scene-tilt">—</dd></div>
+            <div><dt>Orientation</dt><dd id="scene-heading">—</dd></div>
+          </dl>
+        </section>
 
         <div id="lidar-live-stats" aria-live="polite">Chargement du nuage…</div>
+        <div class="keyboard-help">Souris : rotation, déplacement et zoom · R : recentrer · T : dessus · 3 : vue 3D · Échap : quitter un outil</div>
       </div>
     </aside>
 
