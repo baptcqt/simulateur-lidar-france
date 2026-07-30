@@ -1,0 +1,45 @@
+.pipeline-status-card {
+  border-left: 4px solid #6b7280;
+}
+
+.pipeline-status-card.processed {
+  border-left-color: #16a34a;
+  background: rgba(22, 163, 74, 0.08);
+}
+
+.pipeline-status-card.raw {
+  border-left-color: #f59e0b;
+  background: rgba(245, 158, 11, 0.1);
+}
+
+#pipeline-status {
+  display: grid;
+  gap: 0.35rem;
+  line-height: 1.35;
+}
+
+#pipeline-status strong {
+  color: #111827;
+  font-size: 0.98rem;
+}
+
+#pipeline-status span {
+  color: #4b5563;
+  font-size: 0.86rem;
+}
+
+body.simulation-processed #lidar-controls header span::after {
+  content: " · PDAL actif";
+  color: #15803d;
+  font-weight: 700;
+}
+
+body.simulation-raw #lidar-controls header span::after {
+  content: " · dalle brute";
+  color: #b45309;
+  font-weight: 700;
+}
+
+body.simulation-processed #lidar-viewer {
+  background: linear-gradient(180deg, #9fb3c4 0%, #768c7b 100%);
+}
