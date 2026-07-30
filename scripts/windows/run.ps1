@@ -28,10 +28,15 @@ function Enable-ProjectPdal {
             (Join-Path $LocalEnv 'Library\usr\bin'),
             $Env:PATH
         ) -join [System.IO.Path]::PathSeparator
+        $Env:SIMULATEUR_PDAL_EXE = $LocalPdal
         return Get-Command pdal -ErrorAction SilentlyContinue
     }
 
-    return Get-Command pdal -ErrorAction SilentlyContinue
+    $Command = Get-Command pdal -ErrorAction SilentlyContinue
+    if ($Command) {
+        $Env:SIMULATEUR_PDAL_EXE = $Command.Source
+    }
+    return $Command
 }
 
 $Pdal = Enable-ProjectPdal
@@ -81,6 +86,22 @@ function Wait-ForUrl {
     throw "$Name n’a pas démarré correctement. Consultez la fenêtre PowerShell correspondante."
 }
 
+function Wait-ForPdalGateway {
+    for ($attempt = 1; $attempt -le 40; $attempt++) {
+        try {
+            $response = Invoke-RestMethod -Uri 'http://127.0.0.1:8000/lidar/pdal/status' -TimeoutSec 2
+            if ($response.available -eq $true) {
+                Write-Host "Passerelle PDAL prête : $($response.executable)"
+                return
+            }
+        } catch {
+            Start-Sleep -Milliseconds 500
+        }
+    }
+
+    throw 'La passerelle PDAL répond, mais PDAL n’est pas visible par le serveur. Relancez scripts\windows\install-pdal.ps1 puis run.ps1.'
+}
+
 Write-Host 'Synchronisation des dépendances iTowns et du décodeur LiDAR...'
 & npm install --prefix web --no-audit --no-fund
 if ($LASTEXITCODE -ne 0) { throw 'L’installation des dépendances web a échoué.' }
@@ -95,7 +116,9 @@ Stop-ProjectListener -Port 8000
 Stop-ProjectListener -Port 5173
 Start-Sleep -Milliseconds 700
 
-$ApiCommand = "chcp.com 65001 > `$null; Set-Location '$Root'; `$Env:PATH = '$Env:PATH'; & '$VenvPython' -m uvicorn server.main:app --reload --port 8000"
+$EscapedPath = $Env:PATH.Replace("'", "''")
+$EscapedPdalExe = ($Env:SIMULATEUR_PDAL_EXE ?? '').Replace("'", "''")
+$ApiCommand = "chcp.com 65001 > `$null; Set-Location '$Root'; `$Env:PATH = '$EscapedPath'; `$Env:SIMULATEUR_PDAL_EXE = '$EscapedPdalExe'; & '$VenvPython' -m uvicorn server.main:app --reload --port 8000"
 $WebCommand = "chcp.com 65001 > `$null; Set-Location '$Root'; npm run dev --prefix web"
 
 Start-Process powershell -ArgumentList @('-NoExit', '-NoProfile', '-Command', $ApiCommand)
@@ -103,7 +126,7 @@ Start-Process powershell -ArgumentList @('-NoExit', '-NoProfile', '-Command', $W
 
 Wait-ForUrl -Url 'http://127.0.0.1:8000/health' -Name 'API LiDAR'
 Wait-ForUrl -Url 'http://127.0.0.1:8000/local-lidar/files' -Name 'Accès aux dalles locales'
-Wait-ForUrl -Url 'http://127.0.0.1:8000/lidar/pdal/status' -Name 'Passerelle PDAL'
+Wait-ForPdalGateway
 Wait-ForUrl -Url 'http://127.0.0.1:5173/laz-perf/laz-perf.wasm' -Name 'Décodeur LiDAR local'
 Wait-ForUrl -Url 'http://127.0.0.1:5173/lidar.html' -Name 'Vue COPC iTowns dédiée'
 Wait-ForUrl -Url 'http://127.0.0.1:5173' -Name 'Interface cartographique'
