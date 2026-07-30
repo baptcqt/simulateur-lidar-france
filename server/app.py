@@ -33,7 +33,7 @@ DOWNLOAD_JOBS: dict[str, dict[str, Any]] = {}
 DOWNLOAD_CANCEL_EVENTS: dict[str, threading.Event] = {}
 DOWNLOAD_LOCK = threading.Lock()
 
-app = FastAPI(title="Simulateur LiDAR France API", version="0.4.1")
+app = FastAPI(title="Simulateur LiDAR France API", version="0.5.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -59,7 +59,7 @@ def fetch_json(url: str, timeout: int = 12) -> dict[str, Any]:
         headers={
             "Accept": "application/json",
             "Accept-Language": "fr",
-            "User-Agent": "simulateur-lidar-france/0.4",
+            "User-Agent": "simulateur-lidar-france/0.5",
         },
     )
     try:
@@ -220,7 +220,7 @@ def _download_worker(job_id: str, url: str, target: Path) -> None:
             )
             return
 
-        request = Request(url, headers={"User-Agent": "simulateur-lidar-france/0.4"})
+        request = Request(url, headers={"User-Agent": "simulateur-lidar-france/0.5"})
         with urlopen(request, timeout=DOWNLOAD_TIMEOUT_SECONDS) as remote_response:
             total_header = remote_response.headers.get("Content-Length")
             total = int(total_header) if total_header and total_header.isdigit() else None
@@ -393,9 +393,10 @@ def head_file(relative_path: str, range_header: str | None = Header(default=None
     return file_response(resolve_data_file(relative_path), range_header, head_only=True)
 
 
-# Register local-file routes on the canonical application itself. This keeps
-# `server.app:app` and `server.main:app` equivalent and prevents 404 responses
-# when the API is started manually or by an older launcher.
+# Register extension routes on the canonical application itself. This keeps
+# `server.app:app` and `server.main:app` equivalent for every launcher.
 from server.local_files import router as local_lidar_router  # noqa: E402
+from server.pdal_processing import router as pdal_processing_router  # noqa: E402
 
 app.include_router(local_lidar_router)
+app.include_router(pdal_processing_router)
