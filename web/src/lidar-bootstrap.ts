@@ -36,3 +36,4 @@ window.addEventListener('beforeunload', () => {
 
 await import('./lidar-viewer');
 await import('./itowns-complete-tools');
+await import('./lidar-volumes');
