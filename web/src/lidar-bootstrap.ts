@@ -1,5 +1,6 @@
 import * as itowns from 'itowns';
 import { parseLocalLasChunk, terminateLocalLasWorker } from './local-las-parser';
+import './itowns-complete-tools.css';
 
 declare global {
   interface Window {
