@@ -13,4 +13,10 @@ declare module 'itowns/widgets' {
     domElement: HTMLDivElement;
     update(): void;
   }
+
+  export class Minimap {
+    constructor(view: unknown, layer: unknown, options?: Record<string, unknown>);
+    domElement: HTMLDivElement;
+    view: unknown;
+  }
 }
