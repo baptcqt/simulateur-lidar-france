@@ -4,6 +4,8 @@ type CopcLayerLike = {
   id?: string;
   isCopcLayer?: boolean;
   simulationBuildingsUrl?: string;
+  simulationProcessed?: boolean;
+  simulationProfile?: string;
   source?: {
     url?: string;
     whenReady?: Promise<unknown>;
@@ -24,8 +26,13 @@ function openStandaloneViewer(layer: CopcLayerLike): Promise<never> {
   if (!redirecting) {
     redirecting = true;
     const target = new URL('/lidar.html', window.location.origin);
+    const isProcessed = Boolean(layer.simulationProcessed) || sourceUrl.includes('/processed/');
     target.searchParams.set('copc', sourceUrl);
-    target.searchParams.set('label', layer.id || 'Dalle COPC');
+    target.searchParams.set('label', layer.id || (isProcessed ? 'Zone LiDAR traitée PDAL' : 'Dalle COPC brute'));
+    target.searchParams.set(isProcessed ? 'processed' : 'raw', '1');
+    if (layer.simulationProfile) {
+      target.searchParams.set('profile', layer.simulationProfile);
+    }
     if (layer.simulationBuildingsUrl) {
       target.searchParams.set('buildings', layer.simulationBuildingsUrl);
     }
