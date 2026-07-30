@@ -15,13 +15,14 @@ declare global {
 // du pipeline COPC, de la couche et du rendu reste celui d'iTowns.
 (itowns.LASParser as any).parseChunk = parseLocalLasChunk;
 
-// Enregistre la vue et ses couches sans modifier leur fonctionnement. Les outils
-// de visionnage restent ainsi découplés du chargeur COPC principal.
+// Enregistre la GlobeView principale et ses couches sans modifier leur
+// fonctionnement. Les PlanarView internes des widgets ne remplacent jamais la
+// scène principale dans le registre.
 window.__SIM_ITOWNS__ = { layers: new Map<string, any>() };
 const originalAddLayer = itowns.View.prototype.addLayer;
 itowns.View.prototype.addLayer = function trackedAddLayer(layer: any, parentLayer?: any) {
   const runtime = window.__SIM_ITOWNS__;
-  if (runtime) {
+  if (runtime && (this as any).isGlobeView) {
     runtime.view = this;
     if (layer?.id) runtime.layers.set(layer.id, layer);
   }
