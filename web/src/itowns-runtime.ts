@@ -3,6 +3,7 @@ import * as itowns from 'itowns';
 type CopcLayerLike = {
   id?: string;
   isCopcLayer?: boolean;
+  simulationBuildingsUrl?: string;
   source?: {
     url?: string;
     whenReady?: Promise<unknown>;
@@ -25,6 +26,9 @@ function openStandaloneViewer(layer: CopcLayerLike): Promise<never> {
     const target = new URL('/lidar.html', window.location.origin);
     target.searchParams.set('copc', sourceUrl);
     target.searchParams.set('label', layer.id || 'Dalle COPC');
+    if (layer.simulationBuildingsUrl) {
+      target.searchParams.set('buildings', layer.simulationBuildingsUrl);
+    }
     window.location.assign(target.toString());
   }
 
