@@ -17,6 +17,14 @@ if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
     throw 'Node.js et npm sont requis.'
 }
 
+$Pdal = Get-Command pdal -ErrorAction SilentlyContinue
+if ($Pdal) {
+    Write-Host "PDAL détecté : $($Pdal.Source)"
+    & pdal --version
+} else {
+    Write-Warning 'PDAL est introuvable. La carte démarrera, mais le crop/nettoyage LiDAR échouera tant que PDAL n’est pas installé et accessible dans le PATH.'
+}
+
 function Stop-ProjectListener {
     param([Parameter(Mandatory = $true)][int]$Port)
 
@@ -78,6 +86,7 @@ Start-Process powershell -ArgumentList @('-NoExit', '-NoProfile', '-Command', $W
 
 Wait-ForUrl -Url 'http://127.0.0.1:8000/health' -Name 'API LiDAR'
 Wait-ForUrl -Url 'http://127.0.0.1:8000/local-lidar/files' -Name 'Accès aux dalles locales'
+Wait-ForUrl -Url 'http://127.0.0.1:8000/lidar/pdal/status' -Name 'Passerelle PDAL'
 Wait-ForUrl -Url 'http://127.0.0.1:5173/laz-perf/laz-perf.wasm' -Name 'Décodeur LiDAR local'
 Wait-ForUrl -Url 'http://127.0.0.1:5173/lidar.html' -Name 'Vue COPC iTowns dédiée'
 Wait-ForUrl -Url 'http://127.0.0.1:5173' -Name 'Interface cartographique'
