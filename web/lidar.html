@@ -17,12 +17,17 @@
       <header>
         <div>
           <strong>Visionneuse iTowns</strong>
-          <span>Terrain IGN + nuage LiDAR</span>
+          <span>Terrain simplifié + LiDAR traité</span>
         </div>
         <button id="toggle-lidar-controls" type="button" aria-expanded="true" title="Replier les réglages">−</button>
       </header>
 
       <div id="lidar-controls-body">
+        <section id="pipeline-status-card" class="control-section pipeline-status-card">
+          <h2>Pipeline</h2>
+          <div id="pipeline-status" aria-live="polite">Vérification du traitement LiDAR…</div>
+        </section>
+
         <section class="control-section">
           <h2>Caméra</h2>
           <div class="viewer-actions">
@@ -33,13 +38,14 @@
         </section>
 
         <section class="control-section">
-          <h2>Nuage LiDAR</h2>
+          <h2>Mode d’affichage</h2>
           <label class="control-row" for="lidar-render-mode">
-            <span>Rendu des points</span>
+            <span>Rendu</span>
             <select id="lidar-render-mode">
-              <option value="elevation" selected>Relief</option>
-              <option value="classification">Classification</option>
-              <option value="intensity">Intensité</option>
+              <option value="classification" selected>Simulation simplifiée</option>
+              <option value="classification">Analyse classes LiDAR</option>
+              <option value="elevation">Relief technique</option>
+              <option value="intensity">Intensité brute</option>
               <option value="color">Couleurs source</option>
             </select>
           </label>
@@ -63,8 +69,8 @@
         <section class="control-section">
           <h2>Couches</h2>
           <div class="layer-switches">
-            <label><input id="lidar-visible" type="checkbox" checked /> LiDAR</label>
-            <label><input id="ortho-visible" type="checkbox" checked /> Orthophoto</label>
+            <label><input id="lidar-visible" type="checkbox" checked /> Points LiDAR</label>
+            <label><input id="ortho-visible" type="checkbox" /> Orthophoto debug</label>
             <label><input id="terrain-visible" type="checkbox" checked /> Relief MNT</label>
           </div>
         </section>
