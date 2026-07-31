@@ -4,6 +4,7 @@ import csv
 import hashlib
 import json
 import math
+import os
 import shutil
 import subprocess
 import threading
@@ -16,6 +17,8 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
+
+from server.observability import environment_snapshot, log_pdal_event, pdal_executable_path
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data"
@@ -109,7 +112,16 @@ BUILDING_SOURCE_EXPRESSION = "Classification == 2 || Classification == 6"
 
 
 def pdal_executable() -> str | None:
-    return shutil.which("pdal")
+    env_exe = os.environ.get("SIMULATEUR_PDAL_EXE")
+    candidates = [
+        Path(env_exe) if env_exe else None,
+        ROOT / ".pdal-env" / "Library" / "bin" / "pdal.exe",
+        ROOT / ".pdal-env" / "Scripts" / "pdal.exe",
+    ]
+    for candidate in candidates:
+        if candidate and candidate.is_file():
+            return str(candidate.resolve())
+    return pdal_executable_path() or shutil.which("pdal")
 
 
 def resolve_local_lidar_path(api_path: str) -> Path:
@@ -135,7 +147,7 @@ def output_directory(source: Path, request: ProcessRequest) -> Path:
             "size": stat.st_size,
             "bbox": bbox.model_dump(),
             "profile": request.profile,
-            "version": 2,
+            "version": 3,
         },
         sort_keys=True,
     ).encode("utf-8")
@@ -193,7 +205,10 @@ def write_pipeline(path: Path, payload: dict[str, Any]) -> None:
 
 def run_pdal_pipeline(pipeline_path: Path, *, timeout: int = PROCESS_TIMEOUT_SECONDS) -> None:
     executable = pdal_executable()
+    log_pdal_event("Préparation pipeline", executable=executable, pipeline=str(pipeline_path), cwd=str(ROOT))
     if not executable:
+        snapshot = environment_snapshot()
+        log_pdal_event("PDAL introuvable", pipeline=str(pipeline_path), environment=snapshot)
         raise RuntimeError("PDAL est introuvable. Installez PDAL puis relancez le simulateur.")
     result = subprocess.run(
         [executable, "pipeline", str(pipeline_path)],
@@ -202,6 +217,14 @@ def run_pdal_pipeline(pipeline_path: Path, *, timeout: int = PROCESS_TIMEOUT_SEC
         capture_output=True,
         timeout=timeout,
         check=False,
+    )
+    log_pdal_event(
+        "Fin pipeline",
+        executable=executable,
+        pipeline=str(pipeline_path),
+        returncode=result.returncode,
+        stdout=(result.stdout or "")[-4000:],
+        stderr=(result.stderr or "")[-4000:],
     )
     if result.returncode != 0:
         details = (result.stderr or result.stdout or "erreur PDAL inconnue").strip()
@@ -378,6 +401,7 @@ def _job_from_manifest(job_id: str, manifest: dict[str, Any]) -> dict[str, Any]:
 
 def _process_worker(job_id: str, payload: ProcessRequest) -> None:
     try:
+        log_pdal_event("Démarrage job", jobId=job_id, payload=payload.model_dump())
         source = resolve_local_lidar_path(payload.path)
         output_dir = output_directory(source, payload)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -388,6 +412,7 @@ def _process_worker(job_id: str, payload: ProcessRequest) -> None:
 
         existing = manifest_for(output_dir)
         if existing and output_file.is_file():
+            log_pdal_event("Réutilisation cache", jobId=job_id, output=str(output_file), manifest=existing)
             _update_process_job(job_id, **_job_from_manifest(job_id, existing))
             return
 
@@ -414,21 +439,27 @@ def _process_worker(job_id: str, payload: ProcessRequest) -> None:
             "sourcePath": payload.path,
             "createdAt": time.time(),
             "tool": "pdal",
+            "pdalExecutable": pdal_executable(),
             "buildingSource": "lidar-classification-6-only",
         }
         manifest_file.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        log_pdal_event("Job terminé", jobId=job_id, output=str(output_file), buildingCount=len(buildings), manifest=manifest)
         _update_process_job(job_id, **_job_from_manifest(job_id, manifest))
     except Exception as exc:  # noqa: BLE001 - frontière asynchrone lisible côté API
+        log_pdal_event("Job échoué", jobId=job_id, error=repr(exc), environment=environment_snapshot())
         _update_process_job(job_id, status="failed", phase="failed", error=str(exc))
 
 
 @router.get("/pdal/status")
 def pdal_status() -> dict[str, Any]:
     executable = pdal_executable()
+    snapshot = environment_snapshot()
+    log_pdal_event("Statut PDAL", available=bool(executable), executable=executable, environment=snapshot)
     return {
         "available": bool(executable),
         "executable": executable,
         "profiles": list(PROFILES),
+        "environment": snapshot,
     }
 
 
@@ -439,11 +470,13 @@ def start_lidar_process(payload: ProcessRequest) -> dict[str, Any]:
     existing = manifest_for(output_dir)
     job_id = uuid.uuid4().hex
     now = time.time()
+    log_pdal_event("Requête traitement", jobId=job_id, source=str(source), outputDir=str(output_dir), payload=payload.model_dump())
     if existing and (output_dir / "selection.copc.laz").is_file():
         job = _job_from_manifest(job_id, existing)
         job["createdAt"] = now
         with PROCESS_LOCK:
             PROCESS_JOBS[job_id] = job
+        log_pdal_event("Réponse cache immédiate", jobId=job_id, manifest=existing)
         return dict(job)
 
     job = {
