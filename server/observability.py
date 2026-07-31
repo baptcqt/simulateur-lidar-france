@@ -23,6 +23,7 @@ REQUEST_LOG_FILE = LOG_DIR / "requests.log"
 PDAL_LOG_FILE = LOG_DIR / "pdal.log"
 FRONTEND_LOG_FILE = LOG_DIR / "frontend.log"
 DIAGNOSTIC_ZIP = LOG_DIR / "diagnostic.zip"
+INSTALL_FLAG = "_simulateur_observability_installed"
 
 
 def ensure_log_dir() -> None:
@@ -115,7 +116,29 @@ def environment_snapshot() -> dict[str, Any]:
     }
 
 
+def build_diagnostics_zip() -> Path:
+    ensure_log_dir()
+    with zipfile.ZipFile(DIAGNOSTIC_ZIP, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path in LOG_DIR.glob("*.log"):
+            archive.write(path, arcname=f"logs/{path.name}")
+        for path in LOG_DIR.glob("*.json"):
+            archive.write(path, arcname=f"logs/{path.name}")
+        for path in RUNTIME_DIR.glob("*.ps1"):
+            archive.write(path, arcname=f"runtime/{path.name}")
+        archive.writestr("diagnostics/status.json", json.dumps(environment_snapshot(), indent=2, ensure_ascii=False))
+    return DIAGNOSTIC_ZIP
+
+
+def diagnostics_zip_response() -> FileResponse:
+    path = build_diagnostics_zip()
+    return FileResponse(path, media_type="application/zip", filename="simulateur-diagnostic.zip")
+
+
 def install_observability(app: FastAPI) -> None:
+    if getattr(app.state, INSTALL_FLAG, False):
+        return
+    setattr(app.state, INSTALL_FLAG, True)
+
     ensure_log_dir()
     append_log("startup", "Installation de l'observabilité", environment=environment_snapshot())
 
@@ -162,14 +185,11 @@ def install_observability(app: FastAPI) -> None:
 
     @app.get("/diagnostics/logs.zip")
     def diagnostics_logs_zip():
-        ensure_log_dir()
-        with zipfile.ZipFile(DIAGNOSTIC_ZIP, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            for path in LOG_DIR.glob("*.log"):
-                archive.write(path, arcname=f"logs/{path.name}")
-            for path in RUNTIME_DIR.glob("*.ps1"):
-                archive.write(path, arcname=f"runtime/{path.name}")
-            archive.writestr("diagnostics/status.json", json.dumps(environment_snapshot(), indent=2, ensure_ascii=False))
-        return FileResponse(DIAGNOSTIC_ZIP, media_type="application/zip", filename="simulateur-diagnostic.zip")
+        return diagnostics_zip_response()
+
+    @app.get("/logs.zip")
+    def logs_zip_shortcut():
+        return diagnostics_zip_response()
 
 
 def log_pdal_event(message: str, **extra: Any) -> None:
