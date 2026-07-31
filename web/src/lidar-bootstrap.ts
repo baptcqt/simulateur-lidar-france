@@ -38,3 +38,4 @@ await import('./lidar-viewer');
 await import('./simulation-mode');
 await import('./itowns-complete-tools');
 await import('./lidar-volumes');
+await import('./reliable-navigation');
