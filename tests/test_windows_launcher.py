@@ -7,30 +7,35 @@ ROOT = Path(__file__).resolve().parents[1]
 RUN_SCRIPT = ROOT / "scripts" / "windows" / "run.ps1"
 
 
-def test_windows_launcher_uses_instance_identity_and_no_reloader():
+def test_windows_launcher_uses_one_dynamic_server():
     script = RUN_SCRIPT.read_text(encoding="utf-8-sig")
 
+    assert "function Get-FreePort" in script
+    assert "TcpListener" in script
+    assert "LocalEndpoint.Port" in script
+    assert "$Env:VITE_API_URL = $ApiBase" in script
+    assert "npm run build --prefix web" in script
+    assert "server.main:app" in script
     assert "SIMULATEUR_INSTANCE_TOKEN" in script
     assert "Wait-Identity" in script
-    assert "/runtime/identity" in script
+
+
+def test_windows_launcher_does_not_manage_fixed_ports_or_vite_runtime():
+    script = RUN_SCRIPT.read_text(encoding="utf-8-sig")
+
+    assert "Get-NetTCPConnection" not in script
+    assert "taskkill.exe" not in script
+    assert "Clear-ProjectPort" not in script
+    assert "npm run dev" not in script
     assert "--reload" not in script
+    assert "127.0.0.1:8000" not in script
+    assert "127.0.0.1:5173" not in script
 
 
-def test_windows_launcher_requires_a_stably_free_api_port():
+def test_windows_launcher_only_stops_the_previous_tracked_api():
     script = RUN_SCRIPT.read_text(encoding="utf-8-sig")
 
-    assert "StableChecks = 4" in script
-    assert "Get-ProjectRootPid" in script
-    assert "taskkill.exe /PID $rootPid /T /F" in script
-    assert "Premier demarrage API echoue" in script
-
-
-def test_windows_launcher_ignores_ghost_tcp_rows_only_after_bind_probe():
-    script = RUN_SCRIPT.read_text(encoding="utf-8-sig")
-
-    assert "function Test-PortBindable" in script
-    assert "[System.Net.Sockets.TcpListener]::new" in script
-    assert "if (Test-PortBindable $Port)" in script
-    assert "if (-not $owner.Info)" in script
-    assert "Entree TCP obsolete ignoree" in script
-    assert "PID=$rootPid absent : aucun arbre de processus a arreter." in script
+    assert "function Stop-PreviousInstance" in script
+    assert "launcher-instance.json" in script
+    assert "apiPid = $ApiProcess.Id" in script
+    assert "PID=$oldPid reutilise par un autre processus" in script
