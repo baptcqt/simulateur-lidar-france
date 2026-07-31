@@ -23,7 +23,7 @@ REQUEST_LOG_FILE = LOG_DIR / "requests.log"
 PDAL_LOG_FILE = LOG_DIR / "pdal.log"
 FRONTEND_LOG_FILE = LOG_DIR / "frontend.log"
 DIAGNOSTIC_ZIP = LOG_DIR / "diagnostic.zip"
-INSTALL_FLAG = "_simulateur_observability_installed"
+_DIAGNOSTICS_INSTALLED = False
 
 
 def ensure_log_dir() -> None:
@@ -116,30 +116,31 @@ def environment_snapshot() -> dict[str, Any]:
     }
 
 
-def build_diagnostics_zip() -> Path:
+def _write_diagnostic_zip() -> None:
     ensure_log_dir()
+    if DIAGNOSTIC_ZIP.exists():
+        DIAGNOSTIC_ZIP.unlink()
+    allowed_suffixes = {".log", ".json", ".txt"}
     with zipfile.ZipFile(DIAGNOSTIC_ZIP, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for path in LOG_DIR.glob("*.log"):
-            archive.write(path, arcname=f"logs/{path.name}")
-        for path in LOG_DIR.glob("*.json"):
-            archive.write(path, arcname=f"logs/{path.name}")
-        for path in RUNTIME_DIR.glob("*.ps1"):
-            archive.write(path, arcname=f"runtime/{path.name}")
+        for path in sorted(LOG_DIR.iterdir()) if LOG_DIR.exists() else []:
+            if not path.is_file():
+                continue
+            if path == DIAGNOSTIC_ZIP or path.suffix.lower() == ".zip":
+                continue
+            if path.suffix.lower() in allowed_suffixes:
+                archive.write(path, arcname=f"logs/{path.name}")
+        for path in sorted(RUNTIME_DIR.iterdir()) if RUNTIME_DIR.exists() else []:
+            if path.is_file() and path.suffix.lower() in {".ps1", ".json", ".txt"}:
+                archive.write(path, arcname=f"runtime/{path.name}")
         archive.writestr("diagnostics/status.json", json.dumps(environment_snapshot(), indent=2, ensure_ascii=False))
-    return DIAGNOSTIC_ZIP
-
-
-def diagnostics_zip_response() -> FileResponse:
-    path = build_diagnostics_zip()
-    return FileResponse(path, media_type="application/zip", filename="simulateur-diagnostic.zip")
 
 
 def install_observability(app: FastAPI) -> None:
-    if getattr(app.state, INSTALL_FLAG, False):
-        return
-    setattr(app.state, INSTALL_FLAG, True)
-
+    global _DIAGNOSTICS_INSTALLED
     ensure_log_dir()
+    if _DIAGNOSTICS_INSTALLED:
+        return
+    _DIAGNOSTICS_INSTALLED = True
     append_log("startup", "Installation de l'observabilité", environment=environment_snapshot())
 
     @app.middleware("http")
@@ -185,11 +186,13 @@ def install_observability(app: FastAPI) -> None:
 
     @app.get("/diagnostics/logs.zip")
     def diagnostics_logs_zip():
-        return diagnostics_zip_response()
+        _write_diagnostic_zip()
+        return FileResponse(DIAGNOSTIC_ZIP, media_type="application/zip", filename="simulateur-diagnostic.zip")
 
     @app.get("/logs.zip")
-    def logs_zip_shortcut():
-        return diagnostics_zip_response()
+    def diagnostics_logs_zip_shortcut():
+        _write_diagnostic_zip()
+        return FileResponse(DIAGNOSTIC_ZIP, media_type="application/zip", filename="simulateur-diagnostic.zip")
 
 
 def log_pdal_event(message: str, **extra: Any) -> None:
