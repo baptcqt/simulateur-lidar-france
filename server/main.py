@@ -6,3 +6,6 @@ from __future__ import annotations
 import sitecustomize  # noqa: F401
 
 from server.app import app
+from server.observability import install_observability
+
+install_observability(app)
