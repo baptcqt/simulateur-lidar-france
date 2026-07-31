@@ -138,7 +138,7 @@ function Wait-ForUrl {
     param(
         [Parameter(Mandatory = $true)][string]$Url,
         [Parameter(Mandatory = $true)][string]$Name,
-        [int]$Attempts = 40
+        [int]$Attempts = 60
     )
 
     for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
@@ -148,10 +148,11 @@ function Wait-ForUrl {
                 Write-LauncherLog "$Name prêt."
                 return
             }
+            Add-Content -Path $LauncherLog -Encoding UTF8 -Value "$(Get-Date -Format o) $Name attente $attempt : HTTP $($response.StatusCode)"
         } catch {
             Add-Content -Path $LauncherLog -Encoding UTF8 -Value "$(Get-Date -Format o) $Name attente $attempt : $($_.Exception.Message)"
-            Start-Sleep -Milliseconds 500
         }
+        Start-Sleep -Milliseconds 500
     }
 
     throw "$Name n’a pas démarré correctement. Logs : $LogDir"
@@ -159,7 +160,7 @@ function Wait-ForUrl {
 
 function Wait-ForPdalGateway {
     $lastResponse = $null
-    for ($attempt = 1; $attempt -le 40; $attempt++) {
+    for ($attempt = 1; $attempt -le 80; $attempt++) {
         try {
             $response = Invoke-RestMethod -Uri 'http://127.0.0.1:8000/lidar/pdal/status' -TimeoutSec 2
             $lastResponse = $response | ConvertTo-Json -Depth 12
@@ -171,8 +172,8 @@ function Wait-ForPdalGateway {
             }
         } catch {
             Add-Content -Path $LauncherLog -Encoding UTF8 -Value "$(Get-Date -Format o) PDAL status erreur $attempt : $($_.Exception.Message)"
-            Start-Sleep -Milliseconds 500
         }
+        Start-Sleep -Milliseconds 500
     }
 
     Write-LauncherLog "PDAL invisible par le serveur. Statut écrit dans $StatusJson"
@@ -194,7 +195,7 @@ Invoke-LoggedNative 'npm verify iTowns' { & npm run verify:itowns --prefix web -
 
 Stop-ProjectListener -Port 8000
 Stop-ProjectListener -Port 5173
-Start-Sleep -Milliseconds 700
+Start-Sleep -Milliseconds 1000
 
 $ApiScript = Join-Path $RuntimeDir 'start-api.ps1'
 $WebScript = Join-Path $RuntimeDir 'start-web.ps1'
@@ -222,7 +223,7 @@ Write-Host "API cwd=`$(Get-Location)"
 Write-Host "API python='$EscapedPython'"
 Write-Host "API SIMULATEUR_PDAL_EXE=`$Env:SIMULATEUR_PDAL_EXE"
 Write-Host "API Test-Path PDAL=`$(Test-Path `$Env:SIMULATEUR_PDAL_EXE)"
-& '$EscapedPython' -m uvicorn server.main:app --reload --port 8000
+& '$EscapedPython' -m uvicorn server.main:app --port 8000
 Stop-Transcript | Out-Null
 "@
 
