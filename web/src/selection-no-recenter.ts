@@ -36,13 +36,13 @@ function patchMapControls(): void {
   if (!view || !controls?.lookAtCoordinate) return;
 
   const originalLookAtCoordinate = controls.lookAtCoordinate.bind(controls);
-  controls.lookAtCoordinate = (options: unknown) => {
+  controls.lookAtCoordinate = (options: unknown, ...args: unknown[]) => {
     if (performance.now() < suppressSelectionRecenterUntil) {
       suppressSelectionRecenterUntil = 0;
       view.notifyChange(view.camera3D);
       return Promise.resolve();
     }
-    return originalLookAtCoordinate(options);
+    return originalLookAtCoordinate(options, ...args);
   };
   controlsPatched = true;
 }
