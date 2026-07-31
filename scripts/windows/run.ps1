@@ -131,6 +131,25 @@ function Stop-ProcessTree {
     }
 }
 
+function Get-LivePortListeners {
+    param([Parameter(Mandatory = $true)][int]$Port)
+
+    $listeners = @()
+    $connections = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+    foreach ($connection in $connections) {
+        $process = Get-Process -Id $connection.OwningProcess -ErrorAction SilentlyContinue
+        if (-not $process) {
+            Write-LauncherLog "Port $Port : entrée TCP ignorée, PID mort/stale=$($connection.OwningProcess)."
+            continue
+        }
+        $listeners += [pscustomobject]@{
+            Connection = $connection
+            Process = $process
+        }
+    }
+    return $listeners
+}
+
 function Stop-ProjectRuntime {
     $rootNeedle = $Root.ToLowerInvariant()
     $runtimeNeedle = (Join-Path $Root '.runtime').ToLowerInvariant()
@@ -169,10 +188,9 @@ function Stop-ProjectRuntime {
 function Stop-ProjectListener {
     param([Parameter(Mandatory = $true)][int]$Port)
 
-    $connections = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
-    foreach ($connection in $connections) {
-        $process = Get-Process -Id $connection.OwningProcess -ErrorAction SilentlyContinue
-        if (-not $process) { continue }
+    $listeners = Get-LivePortListeners -Port $Port
+    foreach ($listener in $listeners) {
+        $process = $listener.Process
 
         if ($process.ProcessName -notin @('node', 'python', 'python3', 'pythonw')) {
             Write-LauncherLog "Port $Port occupé par $($process.ProcessName) PID=$($process.Id)"
@@ -191,15 +209,15 @@ function Wait-ForPortClosed {
     )
 
     for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
-        $connections = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
-        if (-not $connections) {
+        $listeners = Get-LivePortListeners -Port $Port
+        if (-not $listeners) {
             Write-LauncherLog "Port $Port libre."
             return
         }
 
-        foreach ($connection in $connections) {
-            $process = Get-Process -Id $connection.OwningProcess -ErrorAction SilentlyContinue
-            if ($process -and $process.ProcessName -in @('node', 'python', 'python3', 'pythonw')) {
+        foreach ($listener in $listeners) {
+            $process = $listener.Process
+            if ($process.ProcessName -in @('node', 'python', 'python3', 'pythonw')) {
                 Write-LauncherLog "Port $Port encore occupé par $($process.ProcessName) PID=$($process.Id), arrêt forcé."
                 Stop-ProcessTree -ProcessId $process.Id
             }
@@ -207,11 +225,13 @@ function Wait-ForPortClosed {
         Start-Sleep -Milliseconds 500
     }
 
-    $remaining = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+    $remaining = Get-LivePortListeners -Port $Port
     if ($remaining) {
-        $owners = @($remaining | ForEach-Object { $_.OwningProcess }) -join ', '
-        throw "Le port $Port reste occupé après nettoyage. PID(s) : $owners. Fermez les anciennes fenêtres PowerShell/API puis relancez."
+        $owners = @($remaining | ForEach-Object { "$($_.Process.ProcessName):$($_.Process.Id)" }) -join ', '
+        throw "Le port $Port reste occupé après nettoyage. Processus vivant(s) : $owners. Fermez l’application indiquée puis relancez."
     }
+
+    Write-LauncherLog "Port $Port libre après expiration des entrées TCP transitoires."
 }
 
 function Wait-ForUrl {
