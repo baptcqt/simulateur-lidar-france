@@ -189,9 +189,12 @@ $Env:npm_config_loglevel = 'error'
 Invoke-Native 'npm install web' { & npm install --prefix web --no-audit --no-fund --loglevel=error }
 Invoke-Native 'npm verify iTowns' { & npm run verify:itowns --prefix web --loglevel=error }
 
-# Une valeur '/' devient une chaîne vide dans le frontend après normalisation.
-# Toutes les requêtes API restent donc sur l'origine courante, quel que soit le port.
-$Env:VITE_API_URL = '/'
+$ApiPort = Get-FreePort
+$ApiBase = "http://127.0.0.1:$ApiPort"
+$InstanceToken = [Guid]::NewGuid().ToString('N')
+$Env:VITE_API_URL = $ApiBase
+Write-Log "Port dynamique choisi par Windows : $ApiPort"
+Write-Log "URL API injectee dans le Web : $ApiBase"
 Invoke-Native 'npm build web' { & npm run build --prefix web --loglevel=error }
 
 $WebDist = Join-Path $Root 'web\dist'
@@ -201,11 +204,6 @@ if (-not (Test-Path -LiteralPath (Join-Path $WebDist 'index.html'))) {
 if (-not (Test-Path -LiteralPath (Join-Path $WebDist 'lidar.html'))) {
     throw 'Le build Web est incomplet : web\dist\lidar.html est absent.'
 }
-
-$ApiPort = Get-FreePort
-$ApiBase = "http://127.0.0.1:$ApiPort"
-$InstanceToken = [Guid]::NewGuid().ToString('N')
-Write-Log "Port dynamique choisi par Windows : $ApiPort"
 
 Remove-Item -LiteralPath $ApiStdout, $ApiStderr -Force -ErrorAction SilentlyContinue
 $Env:PYTHONPATH = $Root
