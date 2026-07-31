@@ -9,352 +9,308 @@ $OutputEncoding = $Utf8
 
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 Set-Location $Root
-
 $LogDir = Join-Path $Root 'logs'
 $RuntimeDir = Join-Path $Root '.runtime'
-New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
-New-Item -ItemType Directory -Force -Path $RuntimeDir | Out-Null
+New-Item -ItemType Directory -Force -Path $LogDir, $RuntimeDir | Out-Null
 $LauncherLog = Join-Path $LogDir 'launcher.log'
 $ApiLog = Join-Path $LogDir 'api-console.log'
 $WebLog = Join-Path $LogDir 'web-console.log'
 $StatusJson = Join-Path $LogDir 'last-pdal-status.json'
+$InstanceToken = [Guid]::NewGuid().ToString('N')
 
-function Write-LauncherLog {
-    param([Parameter(Mandatory = $true)][string]$Message)
+function Write-Log([string]$Message) {
     $line = "$(Get-Date -Format o) $Message"
     Add-Content -Path $LauncherLog -Encoding UTF8 -Value $line
     Write-Host $Message
 }
 
-function Write-LauncherOutput {
-    param([AllowNull()][object]$Value)
-    if ($null -eq $Value) { return }
-    $text = $Value.ToString()
-    Add-Content -Path $LauncherLog -Encoding UTF8 -Value $text
-    Write-Host $text
-}
-
-function Invoke-LoggedNative {
-    param(
-        [Parameter(Mandatory = $true)][string]$Name,
-        [Parameter(Mandatory = $true)][scriptblock]$Command
-    )
-
-    Write-LauncherLog "Commande native : $Name"
-    $previousErrorActionPreference = $ErrorActionPreference
-    $hasNativePreference = $false
-    $previousNativePreference = $null
-    if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -Scope Global -ErrorAction SilentlyContinue) {
-        $hasNativePreference = $true
-        $previousNativePreference = $global:PSNativeCommandUseErrorActionPreference
-        $global:PSNativeCommandUseErrorActionPreference = $false
-    }
-
+function Invoke-Native([string]$Name, [scriptblock]$Command) {
+    Write-Log "Commande native : $Name"
+    $oldPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
         $global:LASTEXITCODE = 0
-        & $Command 2>&1 | ForEach-Object { Write-LauncherOutput $_ }
-        $exitCode = $LASTEXITCODE
+        & $Command 2>&1 | ForEach-Object {
+            $text = $_.ToString()
+            Add-Content -Path $LauncherLog -Encoding UTF8 -Value $text
+            Write-Host $text
+        }
+        $code = $LASTEXITCODE
     } finally {
-        $ErrorActionPreference = $previousErrorActionPreference
-        if ($hasNativePreference) {
-            $global:PSNativeCommandUseErrorActionPreference = $previousNativePreference
-        }
+        $ErrorActionPreference = $oldPreference
     }
-
-    if ($null -eq $exitCode) { $exitCode = 0 }
-    Write-LauncherLog "Code retour $Name : $exitCode"
-    if ($exitCode -ne 0) {
-        throw "$Name a échoué avec le code $exitCode. Consultez $LauncherLog."
-    }
+    if ($null -eq $code) { $code = 0 }
+    Write-Log "Code retour $Name : $code"
+    if ($code -ne 0) { throw "$Name a echoue avec le code $code. Consultez $LauncherLog." }
 }
 
-Write-LauncherLog '--- Démarrage simulateur ---'
-Write-LauncherLog "Root=$Root"
-Write-LauncherLog "PowerShell=$($PSVersionTable.PSVersion)"
-Write-LauncherLog "LogDir=$LogDir"
-
-$VenvPython = Join-Path $Root '.venv\Scripts\python.exe'
-if (-not (Test-Path $VenvPython)) {
-    Write-LauncherLog 'Python virtuel introuvable.'
-    throw 'Exécutez d’abord scripts\windows\install.ps1.'
-}
-if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
-    Write-LauncherLog 'npm introuvable.'
-    throw 'Node.js et npm sont requis.'
+function Escape-SingleQuoted([AllowNull()][string]$Value) {
+    if ($null -eq $Value) { return '' }
+    return $Value.Replace("'", "''")
 }
 
-function Enable-ProjectPdal {
-    $LocalEnv = Join-Path $Root '.pdal-env'
-    $LocalPdal = Join-Path $LocalEnv 'Library\bin\pdal.exe'
-    Write-LauncherLog "Recherche PDAL local : $LocalPdal"
-    if (Test-Path $LocalPdal) {
-        $Env:PATH = @(
-            (Join-Path $LocalEnv 'Library\bin'),
-            (Join-Path $LocalEnv 'Scripts'),
-            (Join-Path $LocalEnv 'Library\usr\bin'),
-            $Env:PATH
-        ) -join [System.IO.Path]::PathSeparator
-        $Env:SIMULATEUR_PDAL_EXE = $LocalPdal
-        Write-LauncherLog "SIMULATEUR_PDAL_EXE=$($Env:SIMULATEUR_PDAL_EXE)"
-        return Get-Command pdal -ErrorAction SilentlyContinue
-    }
-
-    $Command = Get-Command pdal -ErrorAction SilentlyContinue
-    if ($Command) {
-        $Env:SIMULATEUR_PDAL_EXE = $Command.Source
-        Write-LauncherLog "PDAL système=$($Command.Source)"
-    }
-    return $Command
+function Get-ProcessInfo([int]$ProcessId) {
+    Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction SilentlyContinue
 }
 
-$Pdal = Enable-ProjectPdal
-if ($Pdal) {
-    Write-LauncherLog "PDAL détecté : $($Pdal.Source)"
-    Invoke-LoggedNative 'pdal --version' { & pdal --version }
-} else {
-    Write-LauncherLog 'AVERTISSEMENT : PDAL introuvable côté lanceur.'
-}
-
-function Stop-ProcessTree {
-    param([Parameter(Mandatory = $true)][int]$ProcessId)
-
-    $children = Get-CimInstance Win32_Process -Filter "ParentProcessId=$ProcessId" -ErrorAction SilentlyContinue
-    foreach ($child in $children) {
-        Stop-ProcessTree -ProcessId $child.ProcessId
-    }
-
-    $process = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
-    if ($process) {
-        Write-LauncherLog "Arrêt processus PID=$ProcessId Name=$($process.ProcessName)"
-        Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
-    }
-}
-
-function Get-LivePortListeners {
-    param([Parameter(Mandatory = $true)][int]$Port)
-
-    $listeners = @()
-    $connections = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
-    foreach ($connection in $connections) {
-        $process = Get-Process -Id $connection.OwningProcess -ErrorAction SilentlyContinue
-        if (-not $process) {
-            Write-LauncherLog "Port $Port : entrée TCP ignorée, PID mort/stale=$($connection.OwningProcess)."
-            continue
-        }
-        $listeners += [pscustomobject]@{
-            Connection = $connection
-            Process = $process
-        }
-    }
-    return $listeners
-}
-
-function Stop-ProjectRuntime {
+function Test-ProjectProcess([AllowNull()][object]$Process, [int]$Port = 0) {
+    if ($null -eq $Process) { return $false }
+    $line = [string]$Process.CommandLine
+    if ([string]::IsNullOrWhiteSpace($line)) { return $false }
+    $lower = $line.ToLowerInvariant()
     $rootNeedle = $Root.ToLowerInvariant()
-    $runtimeNeedle = (Join-Path $Root '.runtime').ToLowerInvariant()
-    $ownPid = $PID
-    $matches = @()
+    $runtimeNeedle = $RuntimeDir.ToLowerInvariant()
 
-    $processes = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue
-    foreach ($process in $processes) {
-        if ($process.ProcessId -eq $ownPid) { continue }
-        $commandLine = [string]$process.CommandLine
-        if ([string]::IsNullOrWhiteSpace($commandLine)) { continue }
+    if ($lower.Contains('start-api.ps1') -or $lower.Contains('start-web.ps1')) { return $true }
+    if ($lower.Contains('uvicorn') -and ($lower.Contains('server.app:app') -or $lower.Contains('server.main:app'))) { return $true }
+    if ($Port -eq 8000 -and $lower.Contains('multiprocessing.spawn')) { return $true }
+    if (($lower.Contains('vite') -or $lower.Contains('npm run dev')) -and ($lower.Contains($rootNeedle) -or $lower.Contains($runtimeNeedle))) { return $true }
+    return $false
+}
 
-        $lower = $commandLine.ToLowerInvariant()
-        $isProjectProcess = $lower.Contains($rootNeedle) -or $lower.Contains($runtimeNeedle)
-        if (-not $isProjectProcess) { continue }
-
-        $isRuntimeProcess = (
-            $lower.Contains('uvicorn') -or
-            $lower.Contains('server.main:app') -or
-            $lower.Contains('start-api.ps1') -or
-            $lower.Contains('start-web.ps1') -or
-            $lower.Contains('npm run dev') -or
-            $lower.Contains('vite')
-        )
-        if ($isRuntimeProcess) {
-            $matches += $process
-        }
+function Get-ProjectRootPid([int]$ProcessId) {
+    $candidate = $ProcessId
+    $current = Get-ProcessInfo $ProcessId
+    for ($depth = 0; $depth -lt 10 -and $current; $depth++) {
+        $parentId = [int]$current.ParentProcessId
+        if ($parentId -le 0 -or $parentId -eq $PID) { break }
+        $parent = Get-ProcessInfo $parentId
+        if (-not (Test-ProjectProcess $parent)) { break }
+        $candidate = $parentId
+        $current = $parent
     }
+    return $candidate
+}
 
-    foreach ($process in ($matches | Sort-Object ProcessId -Descending)) {
-        Write-LauncherLog "Arrêt ancienne instance projet PID=$($process.ProcessId) Command=$($process.CommandLine)"
-        Stop-ProcessTree -ProcessId $process.ProcessId
+function Stop-Tree([int]$ProcessId) {
+    if ($ProcessId -le 0 -or $ProcessId -eq $PID) { return }
+    $rootPid = Get-ProjectRootPid $ProcessId
+    $info = Get-ProcessInfo $rootPid
+    $description = if ($info) { "$($info.Name) $($info.CommandLine)" } else { 'processus inconnu ou termine' }
+    Write-Log "Arret arbre PID=$rootPid ($description)"
+    $oldPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & taskkill.exe /PID $rootPid /T /F 2>&1 | ForEach-Object {
+            Add-Content -Path $LauncherLog -Encoding UTF8 -Value $_.ToString()
+        }
+    } finally {
+        $ErrorActionPreference = $oldPreference
+    }
+    Stop-Process -Id $rootPid -Force -ErrorAction SilentlyContinue
+}
+
+function Stop-OldRuntimes {
+    $handled = @{}
+    foreach ($process in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)) {
+        if ([int]$process.ProcessId -eq $PID -or -not (Test-ProjectProcess $process)) { continue }
+        $rootPid = Get-ProjectRootPid ([int]$process.ProcessId)
+        if ($handled.ContainsKey($rootPid)) { continue }
+        $handled[$rootPid] = $true
+        Write-Log "Ancienne instance : PID=$($process.ProcessId) Command=$($process.CommandLine)"
+        Stop-Tree ([int]$process.ProcessId)
     }
 }
 
-function Stop-ProjectListener {
-    param([Parameter(Mandatory = $true)][int]$Port)
-
-    $listeners = Get-LivePortListeners -Port $Port
-    foreach ($listener in $listeners) {
-        $process = $listener.Process
-
-        if ($process.ProcessName -notin @('node', 'python', 'python3', 'pythonw')) {
-            Write-LauncherLog "Port $Port occupé par $($process.ProcessName) PID=$($process.Id)"
-            throw "Le port $Port est occupé par $($process.ProcessName) (PID $($process.Id)). Fermez cette application avant de lancer le simulateur."
-        }
-
-        Write-LauncherLog "Arrêt de l’ancienne instance $($process.ProcessName) sur le port $Port PID=$($process.Id)"
-        Stop-ProcessTree -ProcessId $process.Id
+function Get-PortOwners([int]$Port) {
+    $owners = @()
+    foreach ($connection in @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)) {
+        $pidValue = [int]$connection.OwningProcess
+        $owners += [pscustomobject]@{ Pid = $pidValue; Info = Get-ProcessInfo $pidValue }
     }
+    return $owners
 }
 
-function Wait-ForPortClosed {
-    param(
-        [Parameter(Mandatory = $true)][int]$Port,
-        [int]$Attempts = 20
-    )
-
+function Clear-ProjectPort([int]$Port, [int]$Attempts = 40, [int]$StableChecks = 4) {
+    $stable = 0
     for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
-        $listeners = Get-LivePortListeners -Port $Port
-        if (-not $listeners) {
-            Write-LauncherLog "Port $Port libre."
-            return
-        }
-
-        foreach ($listener in $listeners) {
-            $process = $listener.Process
-            if ($process.ProcessName -in @('node', 'python', 'python3', 'pythonw')) {
-                Write-LauncherLog "Port $Port encore occupé par $($process.ProcessName) PID=$($process.Id), arrêt forcé."
-                Stop-ProcessTree -ProcessId $process.Id
+        $owners = @(Get-PortOwners $Port)
+        if ($owners.Count -eq 0) {
+            $stable++
+            if ($stable -ge $StableChecks) {
+                Write-Log "Port $Port libre et stable."
+                return
             }
+        } else {
+            $stable = 0
+            foreach ($owner in $owners) {
+                if ($owner.Info -and -not (Test-ProjectProcess $owner.Info $Port)) {
+                    throw "Le port $Port est occupe par $($owner.Info.Name) (PID $($owner.Pid)). Fermez cette application."
+                }
+                Write-Log "Nettoyage port $Port PID=$($owner.Pid)"
+                Stop-Tree $owner.Pid
+            }
+        }
+        Start-Sleep -Milliseconds 350
+    }
+    $remaining = @(Get-PortOwners $Port | ForEach-Object { "PID=$($_.Pid)" }) -join ', '
+    throw "Le port $Port ne reste pas libre ($remaining). Consultez $LauncherLog."
+}
+
+function Assert-Running([AllowNull()][System.Diagnostics.Process]$Process, [string]$Name) {
+    if ($null -eq $Process) { return }
+    $Process.Refresh()
+    if ($Process.HasExited) { throw "$Name s'est arrete avec le code $($Process.ExitCode). Consultez $LogDir." }
+}
+
+function Wait-Identity([System.Diagnostics.Process]$Process, [string]$ExpectedToken, [int]$Attempts = 60) {
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        Assert-Running $Process 'API LiDAR'
+        try {
+            $identity = Invoke-RestMethod -Uri 'http://127.0.0.1:8000/runtime/identity' -TimeoutSec 2
+            if ([string]$identity.instanceToken -eq $ExpectedToken) {
+                Write-Log "API attendue prete : PID=$($identity.processId) Token=$ExpectedToken"
+                return
+            }
+            Add-Content -Path $LauncherLog -Encoding UTF8 -Value "$(Get-Date -Format o) Ancienne API detectee : token='$($identity.instanceToken)'"
+        } catch {
+            Add-Content -Path $LauncherLog -Encoding UTF8 -Value "$(Get-Date -Format o) Attente API $attempt : $($_.Exception.Message)"
         }
         Start-Sleep -Milliseconds 500
     }
-
-    $remaining = Get-LivePortListeners -Port $Port
-    if ($remaining) {
-        $owners = @($remaining | ForEach-Object { "$($_.Process.ProcessName):$($_.Process.Id)" }) -join ', '
-        throw "Le port $Port reste occupé après nettoyage. Processus vivant(s) : $owners. Fermez l’application indiquée puis relancez."
-    }
-
-    Write-LauncherLog "Port $Port libre après expiration des entrées TCP transitoires."
+    throw "La nouvelle API n'a pas pris le port 8000. Consultez $LogDir."
 }
 
-function Wait-ForUrl {
-    param(
-        [Parameter(Mandatory = $true)][string]$Url,
-        [Parameter(Mandatory = $true)][string]$Name,
-        [int]$Attempts = 60
-    )
-
+function Wait-Url([string]$Url, [string]$Name, [AllowNull()][System.Diagnostics.Process]$Process = $null, [int]$Attempts = 60) {
     for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        Assert-Running $Process $Name
         try {
             $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 2
             if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 300) {
-                Write-LauncherLog "$Name prêt."
+                Write-Log "$Name pret."
                 return
             }
-            Add-Content -Path $LauncherLog -Encoding UTF8 -Value "$(Get-Date -Format o) $Name attente $attempt : HTTP $($response.StatusCode)"
         } catch {
             Add-Content -Path $LauncherLog -Encoding UTF8 -Value "$(Get-Date -Format o) $Name attente $attempt : $($_.Exception.Message)"
         }
         Start-Sleep -Milliseconds 500
     }
-
-    throw "$Name n’a pas démarré correctement. Logs : $LogDir"
+    throw "$Name n'a pas demarre. Consultez $LogDir."
 }
 
-function Wait-ForPdalGateway {
-    $lastResponse = $null
-    for ($attempt = 1; $attempt -le 80; $attempt++) {
+function Wait-Pdal([System.Diagnostics.Process]$Process) {
+    for ($attempt = 1; $attempt -le 20; $attempt++) {
+        Assert-Running $Process 'API LiDAR'
         try {
-            $response = Invoke-RestMethod -Uri 'http://127.0.0.1:8000/lidar/pdal/status' -TimeoutSec 2
-            $lastResponse = $response | ConvertTo-Json -Depth 12
-            Set-Content -Path $StatusJson -Encoding UTF8 -Value $lastResponse
-            Add-Content -Path $LauncherLog -Encoding UTF8 -Value "$(Get-Date -Format o) PDAL status tentative $attempt : $lastResponse"
-            if ($response.available -eq $true) {
-                Write-LauncherLog "Passerelle PDAL prête : $($response.executable)"
+            $status = Invoke-RestMethod -Uri 'http://127.0.0.1:8000/lidar/pdal/status' -TimeoutSec 2
+            $json = $status | ConvertTo-Json -Depth 12
+            Set-Content -Path $StatusJson -Encoding UTF8 -Value $json
+            Add-Content -Path $LauncherLog -Encoding UTF8 -Value "$(Get-Date -Format o) PDAL status : $json"
+            if ($status.available -eq $true) {
+                Write-Log "Passerelle PDAL prete : $($status.executable)"
                 return
             }
+            throw "L'API fonctionne, mais PDAL est introuvable. Statut : $StatusJson"
         } catch {
-            Add-Content -Path $LauncherLog -Encoding UTF8 -Value "$(Get-Date -Format o) PDAL status erreur $attempt : $($_.Exception.Message)"
+            if ($_.Exception.Message -like "L'API fonctionne, mais PDAL*") { throw }
+            Add-Content -Path $LauncherLog -Encoding UTF8 -Value "$(Get-Date -Format o) PDAL attente $attempt : $($_.Exception.Message)"
         }
         Start-Sleep -Milliseconds 500
     }
-
-    Write-LauncherLog "PDAL invisible par le serveur. Statut écrit dans $StatusJson"
-    Write-LauncherLog 'Ouvrez http://127.0.0.1:8000/diagnostics/logs.zip et envoyez le ZIP.'
-    throw "La passerelle PDAL répond, mais PDAL n’est pas visible par le serveur. Logs : $LogDir"
+    throw "PDAL n'est pas disponible. Logs : $LogDir"
 }
 
-function Escape-ForSingleQuotedPowerShellString {
-    param([AllowNull()][string]$Value)
-    if ($null -eq $Value) { return '' }
-    return $Value.Replace("'", "''")
+function Find-Pdal {
+    $localEnv = Join-Path $Root '.pdal-env'
+    $localExe = Join-Path $localEnv 'Library\bin\pdal.exe'
+    if (Test-Path -LiteralPath $localExe) {
+        $Env:PATH = @(
+            (Join-Path $localEnv 'Library\bin'),
+            (Join-Path $localEnv 'Scripts'),
+            (Join-Path $localEnv 'Library\usr\bin'),
+            $Env:PATH
+        ) -join [System.IO.Path]::PathSeparator
+        return (Resolve-Path -LiteralPath $localExe).Path
+    }
+    $command = Get-Command pdal -ErrorAction SilentlyContinue
+    if ($command) { return $command.Source }
+    return $null
 }
 
-Write-LauncherLog 'Synchronisation des dépendances iTowns et du décodeur LiDAR...'
+Write-Log '--- Demarrage simulateur ---'
+Write-Log "Root=$Root"
+Write-Log "InstanceToken=$InstanceToken"
+$Python = Join-Path $Root '.venv\Scripts\python.exe'
+if (-not (Test-Path -LiteralPath $Python)) { throw 'Executez scripts\windows\install.ps1.' }
+if (-not (Get-Command npm -ErrorAction SilentlyContinue)) { throw 'Node.js et npm sont requis.' }
+$PdalExe = Find-Pdal
+if (-not $PdalExe) { throw 'PDAL est introuvable. Executez scripts\windows\install-pdal.ps1.' }
+$Env:SIMULATEUR_PDAL_EXE = $PdalExe
+Invoke-Native 'pdal --version' { & $PdalExe --version }
+
 $Env:npm_config_loglevel = 'error'
-Invoke-LoggedNative 'npm install web' { & npm install --prefix web --no-audit --no-fund --loglevel=error }
-Invoke-LoggedNative 'copy laz-perf' { & node (Join-Path $Root 'web\scripts\copy-laz-perf.mjs') }
-Invoke-LoggedNative 'npm verify iTowns' { & npm run verify:itowns --prefix web --loglevel=error }
+Invoke-Native 'npm install web' { & npm install --prefix web --no-audit --no-fund --loglevel=error }
+Invoke-Native 'copy laz-perf' { & node (Join-Path $Root 'web\scripts\copy-laz-perf.mjs') }
+Invoke-Native 'npm verify iTowns' { & npm run verify:itowns --prefix web --loglevel=error }
 
-Stop-ProjectRuntime
-Stop-ProjectListener -Port 8000
-Stop-ProjectListener -Port 5173
-Wait-ForPortClosed -Port 8000
-Wait-ForPortClosed -Port 5173
-Start-Sleep -Milliseconds 1000
+Stop-OldRuntimes
+Clear-ProjectPort 8000
+Clear-ProjectPort 5173
 
 $ApiScript = Join-Path $RuntimeDir 'start-api.ps1'
 $WebScript = Join-Path $RuntimeDir 'start-web.ps1'
+$EscapedRoot = Escape-SingleQuoted $Root
+$EscapedPath = Escape-SingleQuoted $Env:PATH
+$EscapedPython = Escape-SingleQuoted $Python
+$EscapedPdal = Escape-SingleQuoted $PdalExe
+$EscapedToken = Escape-SingleQuoted $InstanceToken
+$EscapedApiLog = Escape-SingleQuoted $ApiLog
+$EscapedWebLog = Escape-SingleQuoted $WebLog
 
-$EscapedRoot = Escape-ForSingleQuotedPowerShellString $Root
-$EscapedPath = Escape-ForSingleQuotedPowerShellString $Env:PATH
-$EscapedPython = Escape-ForSingleQuotedPowerShellString $VenvPython
-$EscapedPdalExe = Escape-ForSingleQuotedPowerShellString $Env:SIMULATEUR_PDAL_EXE
-$EscapedApiLog = Escape-ForSingleQuotedPowerShellString $ApiLog
-$EscapedWebLog = Escape-ForSingleQuotedPowerShellString $WebLog
-
-$ApiScriptContent = @"
+$ApiContent = @"
 `$ErrorActionPreference = 'Continue'
 chcp.com 65001 > `$null
-`$Utf8 = [System.Text.UTF8Encoding]::new(`$false)
-[Console]::InputEncoding = `$Utf8
-[Console]::OutputEncoding = `$Utf8
-`$OutputEncoding = `$Utf8
 Start-Transcript -Path '$EscapedApiLog' -Append | Out-Null
 Set-Location '$EscapedRoot'
 `$Env:PATH = '$EscapedPath'
 `$Env:PYTHONPATH = '$EscapedRoot'
-`$Env:SIMULATEUR_PDAL_EXE = '$EscapedPdalExe'
-Write-Host "API cwd=`$(Get-Location)"
-Write-Host "API python='$EscapedPython'"
-Write-Host "API SIMULATEUR_PDAL_EXE=`$Env:SIMULATEUR_PDAL_EXE"
-Write-Host "API Test-Path PDAL=`$(Test-Path `$Env:SIMULATEUR_PDAL_EXE)"
-& '$EscapedPython' -m uvicorn server.main:app --port 8000
+`$Env:PYTHONUNBUFFERED = '1'
+`$Env:SIMULATEUR_PDAL_EXE = '$EscapedPdal'
+`$Env:SIMULATEUR_INSTANCE_TOKEN = '$EscapedToken'
+Write-Host "API PDAL=`$Env:SIMULATEUR_PDAL_EXE"
+Write-Host "API Token=`$Env:SIMULATEUR_INSTANCE_TOKEN"
+& '$EscapedPython' -m uvicorn server.main:app --host 127.0.0.1 --port 8000
+`$code = `$LASTEXITCODE
 Stop-Transcript | Out-Null
+exit `$code
 "@
-
-$WebScriptContent = @"
+$WebContent = @"
 `$ErrorActionPreference = 'Continue'
 chcp.com 65001 > `$null
-`$Env:npm_config_loglevel = 'error'
 Start-Transcript -Path '$EscapedWebLog' -Append | Out-Null
 Set-Location '$EscapedRoot'
 npm run dev --prefix web --loglevel=error
+`$code = `$LASTEXITCODE
 Stop-Transcript | Out-Null
+exit `$code
 "@
+Set-Content -Path $ApiScript -Encoding UTF8 -Value $ApiContent
+Set-Content -Path $WebScript -Encoding UTF8 -Value $WebContent
+@{ token = $InstanceToken; launcherPid = $PID; startedAt = (Get-Date).ToString('o'); pdalExecutable = $PdalExe } |
+    ConvertTo-Json | Set-Content -Path (Join-Path $RuntimeDir 'launcher-instance.json') -Encoding UTF8
 
-Set-Content -Path $ApiScript -Value $ApiScriptContent -Encoding UTF8
-Set-Content -Path $WebScript -Value $WebScriptContent -Encoding UTF8
-Write-LauncherLog "Script API écrit : $ApiScript"
-Write-LauncherLog "Script Web écrit : $WebScript"
+function Start-Api {
+    Start-Process powershell -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$ApiScript`"") -PassThru
+}
 
-Start-Process powershell -ArgumentList @('-NoExit', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$ApiScript`"")
-Start-Process powershell -ArgumentList @('-NoExit', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$WebScript`"")
+$ApiProcess = Start-Api
+try {
+    Wait-Identity $ApiProcess $InstanceToken
+} catch {
+    Write-Log "Premier demarrage API echoue : $($_.Exception.Message)"
+    Stop-OldRuntimes
+    Clear-ProjectPort 8000
+    $ApiProcess = Start-Api
+    Wait-Identity $ApiProcess $InstanceToken
+}
+$WebProcess = Start-Process powershell -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$WebScript`"") -PassThru
 
-Wait-ForUrl -Url 'http://127.0.0.1:8000/health' -Name 'API LiDAR'
-Wait-ForUrl -Url 'http://127.0.0.1:8000/local-lidar/files' -Name 'Accès aux dalles locales'
-Wait-ForPdalGateway
-Wait-ForUrl -Url 'http://127.0.0.1:8000/diagnostics/status' -Name 'Diagnostics serveur'
-Wait-ForUrl -Url 'http://127.0.0.1:5173/laz-perf/laz-perf.wasm' -Name 'Décodeur LiDAR local'
-Wait-ForUrl -Url 'http://127.0.0.1:5173/lidar.html' -Name 'Vue COPC iTowns dédiée'
-Wait-ForUrl -Url 'http://127.0.0.1:5173' -Name 'Interface cartographique'
-
-Write-LauncherLog 'Démarrage terminé.'
+Wait-Url 'http://127.0.0.1:8000/health' 'API LiDAR' $ApiProcess
+Wait-Url 'http://127.0.0.1:8000/local-lidar/files' 'Acces aux dalles locales' $ApiProcess
+Wait-Pdal $ApiProcess
+Wait-Url 'http://127.0.0.1:8000/diagnostics/status' 'Diagnostics serveur' $ApiProcess
+Wait-Url 'http://127.0.0.1:5173/laz-perf/laz-perf.wasm' 'Decodeur LiDAR local' $WebProcess
+Wait-Url 'http://127.0.0.1:5173/lidar.html' 'Vue COPC iTowns' $WebProcess
+Wait-Url 'http://127.0.0.1:5173' 'Interface cartographique' $WebProcess
+Write-Log 'Demarrage termine.'
 Start-Process 'http://127.0.0.1:5173'
