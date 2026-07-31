@@ -13,7 +13,7 @@ def test_windows_launcher_uses_one_dynamic_server():
     assert "function Get-FreePort" in script
     assert "TcpListener" in script
     assert "LocalEndpoint.Port" in script
-    assert "$Env:VITE_API_URL = $ApiBase" in script
+    assert "$Env:VITE_API_URL = '/'" in script
     assert "npm run build --prefix web" in script
     assert "server.main:app" in script
     assert "SIMULATEUR_INSTANCE_TOKEN" in script
