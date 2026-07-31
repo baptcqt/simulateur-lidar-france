@@ -26,6 +26,49 @@ function Write-LauncherLog {
     Write-Host $Message
 }
 
+function Write-LauncherOutput {
+    param([AllowNull()][object]$Value)
+    if ($null -eq $Value) { return }
+    $text = $Value.ToString()
+    Add-Content -Path $LauncherLog -Encoding UTF8 -Value $text
+    Write-Host $text
+}
+
+function Invoke-LoggedNative {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][scriptblock]$Command
+    )
+
+    Write-LauncherLog "Commande native : $Name"
+    $previousErrorActionPreference = $ErrorActionPreference
+    $hasNativePreference = $false
+    $previousNativePreference = $null
+    if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -Scope Global -ErrorAction SilentlyContinue) {
+        $hasNativePreference = $true
+        $previousNativePreference = $global:PSNativeCommandUseErrorActionPreference
+        $global:PSNativeCommandUseErrorActionPreference = $false
+    }
+
+    try {
+        $ErrorActionPreference = 'Continue'
+        $global:LASTEXITCODE = 0
+        & $Command 2>&1 | ForEach-Object { Write-LauncherOutput $_ }
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+        if ($hasNativePreference) {
+            $global:PSNativeCommandUseErrorActionPreference = $previousNativePreference
+        }
+    }
+
+    if ($null -eq $exitCode) { $exitCode = 0 }
+    Write-LauncherLog "Code retour $Name : $exitCode"
+    if ($exitCode -ne 0) {
+        throw "$Name a échoué avec le code $exitCode. Consultez $LauncherLog."
+    }
+}
+
 Write-LauncherLog '--- Démarrage simulateur ---'
 Write-LauncherLog "Root=$Root"
 Write-LauncherLog "PowerShell=$($PSVersionTable.PSVersion)"
@@ -68,7 +111,7 @@ function Enable-ProjectPdal {
 $Pdal = Enable-ProjectPdal
 if ($Pdal) {
     Write-LauncherLog "PDAL détecté : $($Pdal.Source)"
-    & pdal --version 2>&1 | Tee-Object -FilePath $LauncherLog -Append
+    Invoke-LoggedNative 'pdal --version' { & pdal --version }
 } else {
     Write-LauncherLog 'AVERTISSEMENT : PDAL introuvable côté lanceur.'
 }
@@ -144,14 +187,10 @@ function Escape-ForSingleQuotedPowerShellString {
 }
 
 Write-LauncherLog 'Synchronisation des dépendances iTowns et du décodeur LiDAR...'
-& npm install --prefix web --no-audit --no-fund 2>&1 | Tee-Object -FilePath $LauncherLog -Append
-if ($LASTEXITCODE -ne 0) { throw 'L’installation des dépendances web a échoué.' }
-
-& node (Join-Path $Root 'web\scripts\copy-laz-perf.mjs') 2>&1 | Tee-Object -FilePath $LauncherLog -Append
-if ($LASTEXITCODE -ne 0) { throw 'La préparation du décodeur LiDAR a échoué.' }
-
-& npm run verify:itowns --prefix web 2>&1 | Tee-Object -FilePath $LauncherLog -Append
-if ($LASTEXITCODE -ne 0) { throw 'La chaîne COPC iTowns est incomplète ou incohérente.' }
+$Env:npm_config_loglevel = 'error'
+Invoke-LoggedNative 'npm install web' { & npm install --prefix web --no-audit --no-fund --loglevel=error }
+Invoke-LoggedNative 'copy laz-perf' { & node (Join-Path $Root 'web\scripts\copy-laz-perf.mjs') }
+Invoke-LoggedNative 'npm verify iTowns' { & npm run verify:itowns --prefix web --loglevel=error }
 
 Stop-ProjectListener -Port 8000
 Stop-ProjectListener -Port 5173
@@ -168,7 +207,7 @@ $EscapedApiLog = Escape-ForSingleQuotedPowerShellString $ApiLog
 $EscapedWebLog = Escape-ForSingleQuotedPowerShellString $WebLog
 
 $ApiScriptContent = @"
-`$ErrorActionPreference = 'Stop'
+`$ErrorActionPreference = 'Continue'
 chcp.com 65001 > `$null
 `$Utf8 = [System.Text.UTF8Encoding]::new(`$false)
 [Console]::InputEncoding = `$Utf8
@@ -188,11 +227,12 @@ Stop-Transcript | Out-Null
 "@
 
 $WebScriptContent = @"
-`$ErrorActionPreference = 'Stop'
+`$ErrorActionPreference = 'Continue'
 chcp.com 65001 > `$null
+`$Env:npm_config_loglevel = 'error'
 Start-Transcript -Path '$EscapedWebLog' -Append | Out-Null
 Set-Location '$EscapedRoot'
-npm run dev --prefix web
+npm run dev --prefix web --loglevel=error
 Stop-Transcript | Out-Null
 "@
 
