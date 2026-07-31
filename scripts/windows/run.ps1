@@ -116,6 +116,56 @@ if ($Pdal) {
     Write-LauncherLog 'AVERTISSEMENT : PDAL introuvable côté lanceur.'
 }
 
+function Stop-ProcessTree {
+    param([Parameter(Mandatory = $true)][int]$ProcessId)
+
+    $children = Get-CimInstance Win32_Process -Filter "ParentProcessId=$ProcessId" -ErrorAction SilentlyContinue
+    foreach ($child in $children) {
+        Stop-ProcessTree -ProcessId $child.ProcessId
+    }
+
+    $process = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if ($process) {
+        Write-LauncherLog "Arrêt processus PID=$ProcessId Name=$($process.ProcessName)"
+        Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Stop-ProjectRuntime {
+    $rootNeedle = $Root.ToLowerInvariant()
+    $runtimeNeedle = (Join-Path $Root '.runtime').ToLowerInvariant()
+    $ownPid = $PID
+    $matches = @()
+
+    $processes = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue
+    foreach ($process in $processes) {
+        if ($process.ProcessId -eq $ownPid) { continue }
+        $commandLine = [string]$process.CommandLine
+        if ([string]::IsNullOrWhiteSpace($commandLine)) { continue }
+
+        $lower = $commandLine.ToLowerInvariant()
+        $isProjectProcess = $lower.Contains($rootNeedle) -or $lower.Contains($runtimeNeedle)
+        if (-not $isProjectProcess) { continue }
+
+        $isRuntimeProcess = (
+            $lower.Contains('uvicorn') -or
+            $lower.Contains('server.main:app') -or
+            $lower.Contains('start-api.ps1') -or
+            $lower.Contains('start-web.ps1') -or
+            $lower.Contains('npm run dev') -or
+            $lower.Contains('vite')
+        )
+        if ($isRuntimeProcess) {
+            $matches += $process
+        }
+    }
+
+    foreach ($process in ($matches | Sort-Object ProcessId -Descending)) {
+        Write-LauncherLog "Arrêt ancienne instance projet PID=$($process.ProcessId) Command=$($process.CommandLine)"
+        Stop-ProcessTree -ProcessId $process.ProcessId
+    }
+}
+
 function Stop-ProjectListener {
     param([Parameter(Mandatory = $true)][int]$Port)
 
@@ -130,7 +180,37 @@ function Stop-ProjectListener {
         }
 
         Write-LauncherLog "Arrêt de l’ancienne instance $($process.ProcessName) sur le port $Port PID=$($process.Id)"
-        Stop-Process -Id $process.Id -Force
+        Stop-ProcessTree -ProcessId $process.Id
+    }
+}
+
+function Wait-ForPortClosed {
+    param(
+        [Parameter(Mandatory = $true)][int]$Port,
+        [int]$Attempts = 20
+    )
+
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        $connections = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+        if (-not $connections) {
+            Write-LauncherLog "Port $Port libre."
+            return
+        }
+
+        foreach ($connection in $connections) {
+            $process = Get-Process -Id $connection.OwningProcess -ErrorAction SilentlyContinue
+            if ($process -and $process.ProcessName -in @('node', 'python', 'python3', 'pythonw')) {
+                Write-LauncherLog "Port $Port encore occupé par $($process.ProcessName) PID=$($process.Id), arrêt forcé."
+                Stop-ProcessTree -ProcessId $process.Id
+            }
+        }
+        Start-Sleep -Milliseconds 500
+    }
+
+    $remaining = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+    if ($remaining) {
+        $owners = @($remaining | ForEach-Object { $_.OwningProcess }) -join ', '
+        throw "Le port $Port reste occupé après nettoyage. PID(s) : $owners. Fermez les anciennes fenêtres PowerShell/API puis relancez."
     }
 }
 
@@ -193,8 +273,11 @@ Invoke-LoggedNative 'npm install web' { & npm install --prefix web --no-audit --
 Invoke-LoggedNative 'copy laz-perf' { & node (Join-Path $Root 'web\scripts\copy-laz-perf.mjs') }
 Invoke-LoggedNative 'npm verify iTowns' { & npm run verify:itowns --prefix web --loglevel=error }
 
+Stop-ProjectRuntime
 Stop-ProjectListener -Port 8000
 Stop-ProjectListener -Port 5173
+Wait-ForPortClosed -Port 8000
+Wait-ForPortClosed -Port 5173
 Start-Sleep -Milliseconds 1000
 
 $ApiScript = Join-Path $RuntimeDir 'start-api.ps1'
