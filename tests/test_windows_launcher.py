@@ -13,11 +13,23 @@ def test_windows_launcher_uses_one_dynamic_server():
     assert "function Get-FreePort" in script
     assert "TcpListener" in script
     assert "LocalEndpoint.Port" in script
-    assert "$Env:VITE_API_URL = '/'" in script
+    assert "$Env:VITE_API_URL = $ApiBase" in script
     assert "npm run build --prefix web" in script
     assert "server.main:app" in script
     assert "SIMULATEUR_INSTANCE_TOKEN" in script
     assert "Wait-Identity" in script
+
+
+def test_windows_launcher_injects_valid_absolute_api_url_before_web_build():
+    script = RUN_SCRIPT.read_text(encoding="utf-8-sig")
+
+    port_index = script.index("$ApiPort = Get-FreePort")
+    base_index = script.index('$ApiBase = "http://127.0.0.1:$ApiPort"')
+    env_index = script.index("$Env:VITE_API_URL = $ApiBase")
+    build_index = script.index("npm run build --prefix web")
+
+    assert port_index < base_index < env_index < build_index
+    assert "$Env:VITE_API_URL = '/'" not in script
 
 
 def test_windows_launcher_does_not_manage_fixed_ports_or_vite_runtime():
