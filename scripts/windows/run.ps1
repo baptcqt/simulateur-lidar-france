@@ -209,14 +209,16 @@ $Env:PYTHONPATH = $Root
 $Env:PYTHONUNBUFFERED = '1'
 $Env:SIMULATEUR_INSTANCE_TOKEN = $InstanceToken
 
-$ApiProcess = Start-Process \
-    -FilePath $Python \
-    -ArgumentList @('-m', 'uvicorn', 'server.main:app', '--host', '127.0.0.1', '--port', "$ApiPort") \
-    -WorkingDirectory $Root \
-    -RedirectStandardOutput $ApiStdout \
-    -RedirectStandardError $ApiStderr \
-    -WindowStyle Hidden \
-    -PassThru
+$startParameters = @{
+    FilePath = $Python
+    ArgumentList = @('-m', 'uvicorn', 'server.main:app', '--host', '127.0.0.1', '--port', "$ApiPort")
+    WorkingDirectory = $Root
+    RedirectStandardOutput = $ApiStdout
+    RedirectStandardError = $ApiStderr
+    WindowStyle = 'Hidden'
+    PassThru = $true
+}
+$ApiProcess = Start-Process @startParameters
 
 @{
     apiPid = $ApiProcess.Id
