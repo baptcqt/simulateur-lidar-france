@@ -16,6 +16,30 @@ Prototype web open source centré sur **iTowns** et **PDAL** pour explorer les d
 
 L’interface ne présente pas les détails techniques du cache, des requêtes HTTP partielles, du décodeur ou du pipeline PDAL. Ces opérations sont automatiques.
 
+## Diagnostic et logs
+
+Le projet écrit des logs locaux dans `logs/`. Ce dossier est présent dans le dépôt grâce à `logs/.gitkeep`, mais les vrais fichiers `.log` restent ignorés par Git.
+
+Fichiers principaux :
+
+- `logs/launcher.log` : lancement Windows, PATH, PDAL détecté, vérifications de ports et endpoints ;
+- `logs/api-console.log` : console FastAPI/uvicorn ;
+- `logs/web-console.log` : console Vite ;
+- `logs/simulateur.log` : événements serveur globaux ;
+- `logs/requests.log` : toutes les requêtes HTTP reçues par l’API ;
+- `logs/pdal.log` : détection PDAL, pipelines, code retour, stdout/stderr ;
+- `logs/frontend.log` : erreurs navigateur, fetch, pages chargées.
+
+Endpoints utiles quand il y a un bug :
+
+```text
+http://127.0.0.1:8000/diagnostics/status
+http://127.0.0.1:8000/diagnostics/logs.zip
+http://127.0.0.1:8000/lidar/pdal/status
+```
+
+En cas de problème, envoyer directement le fichier ZIP produit par `/diagnostics/logs.zip`. Il regroupe les logs, les scripts runtime générés et un snapshot de l’environnement serveur.
+
 ## Installer PDAL sous Windows
 
 PDAL n’est pas un paquet Python classique sous Windows. Le projet installe donc un environnement local Conda Forge dans `.pdal-env`.
@@ -38,7 +62,7 @@ Ensuite :
 .\scripts\windows\run.ps1
 ```
 
-Le lanceur ajoute automatiquement `.pdal-env\Library\bin` au `PATH` de l’API.
+Le lanceur ajoute automatiquement `.pdal-env\Library\bin` au `PATH` de l’API et vérifie que le serveur voit réellement PDAL.
 
 ## Réutiliser une dalle téléchargée
 
@@ -87,6 +111,7 @@ Le lanceur :
 - prépare le décodeur LiDAR local ;
 - ferme les anciennes instances qui occupent les ports 8000 et 5173 ;
 - démarre l’API et Vite ;
+- écrit les logs dans `logs/` ;
 - attend que l’API, l’interface, PDAL et le fichier WASM répondent avant d’ouvrir le navigateur.
 
 ## Installation manuelle
@@ -139,6 +164,7 @@ tests/               tests de l’API locale
 configs/             catalogue logique des couches IGN
 data/lidar/          dalles COPC locales ignorées par Git
 data/processed/      zones traitées PDAL ignorées par Git
+logs/                logs locaux ignorés par Git, sauf .gitkeep
 scripts/windows/     installation et lancement Windows
 ```
 
