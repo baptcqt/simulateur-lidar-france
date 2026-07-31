@@ -86,8 +86,11 @@ function Stop-Tree([int]$ProcessId) {
     if ($ProcessId -le 0 -or $ProcessId -eq $PID) { return }
     $rootPid = Get-ProjectRootPid $ProcessId
     $info = Get-ProcessInfo $rootPid
-    $description = if ($info) { "$($info.Name) $($info.CommandLine)" } else { 'processus inconnu ou termine' }
-    Write-Log "Arret arbre PID=$rootPid ($description)"
+    if (-not $info) {
+        Write-Log "PID=$rootPid absent : aucun arbre de processus a arreter."
+        return
+    }
+    Write-Log "Arret arbre PID=$rootPid ($($info.Name) $($info.CommandLine))"
     $oldPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
@@ -114,37 +117,80 @@ function Stop-OldRuntimes {
 
 function Get-PortOwners([int]$Port) {
     $owners = @()
+    $seen = @{}
     foreach ($connection in @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)) {
         $pidValue = [int]$connection.OwningProcess
+        if ($seen.ContainsKey($pidValue)) { continue }
+        $seen[$pidValue] = $true
         $owners += [pscustomobject]@{ Pid = $pidValue; Info = Get-ProcessInfo $pidValue }
     }
     return $owners
 }
 
+function Test-PortBindable([int]$Port) {
+    $listener = $null
+    try {
+        $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
+        $listener.Server.ExclusiveAddressUse = $true
+        $listener.Start()
+        return $true
+    } catch [System.Net.Sockets.SocketException] {
+        return $false
+    } finally {
+        if ($null -ne $listener) {
+            try { $listener.Stop() } catch { }
+        }
+    }
+}
+
 function Clear-ProjectPort([int]$Port, [int]$Attempts = 40, [int]$StableChecks = 4) {
     $stable = 0
+    $loggedGhosts = @{}
     for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
-        $owners = @(Get-PortOwners $Port)
-        if ($owners.Count -eq 0) {
+        if (Test-PortBindable $Port) {
             $stable++
             if ($stable -ge $StableChecks) {
-                Write-Log "Port $Port libre et stable."
+                Write-Log "Port $Port libre et stable (test de liaison TCP)."
                 return
             }
-        } else {
-            $stable = 0
-            foreach ($owner in $owners) {
-                if ($owner.Info -and -not (Test-ProjectProcess $owner.Info $Port)) {
-                    throw "Le port $Port est occupe par $($owner.Info.Name) (PID $($owner.Pid)). Fermez cette application."
-                }
-                Write-Log "Nettoyage port $Port PID=$($owner.Pid)"
-                Stop-Tree $owner.Pid
+            Start-Sleep -Milliseconds 350
+            continue
+        }
+
+        $stable = 0
+        $owners = @(Get-PortOwners $Port)
+        if ($owners.Count -eq 0) {
+            if ($attempt -eq 1 -or $attempt % 5 -eq 0) {
+                Write-Log "Port $Port reserve sans processus identifiable ; nouvelle verification en cours."
             }
+        }
+
+        foreach ($owner in $owners) {
+            if (-not $owner.Info) {
+                if (-not $loggedGhosts.ContainsKey($owner.Pid)) {
+                    $loggedGhosts[$owner.Pid] = $true
+                    Write-Log "Entree TCP obsolete ignoree sur le port $Port : PID=$($owner.Pid) absent."
+                }
+                continue
+            }
+            if (-not (Test-ProjectProcess $owner.Info $Port)) {
+                throw "Le port $Port est occupe par $($owner.Info.Name) (PID $($owner.Pid)). Fermez cette application."
+            }
+            Write-Log "Nettoyage port $Port PID=$($owner.Pid)"
+            Stop-Tree $owner.Pid
         }
         Start-Sleep -Milliseconds 350
     }
-    $remaining = @(Get-PortOwners $Port | ForEach-Object { "PID=$($_.Pid)" }) -join ', '
-    throw "Le port $Port ne reste pas libre ($remaining). Consultez $LauncherLog."
+
+    if (Test-PortBindable $Port) {
+        Write-Log "Port $Port libre apres expiration des entrees TCP obsoletes."
+        return
+    }
+
+    $remaining = @(Get-PortOwners $Port | ForEach-Object {
+        if ($_.Info) { "$($_.Info.Name):$($_.Pid)" } else { "PID fantome=$($_.Pid)" }
+    }) -join ', '
+    throw "Le port $Port reste reellement indisponible ($remaining). Consultez $LauncherLog."
 }
 
 function Assert-Running([AllowNull()][System.Diagnostics.Process]$Process, [string]$Name) {
