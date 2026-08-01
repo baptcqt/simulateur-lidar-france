@@ -42,6 +42,15 @@ function rememberMainView(view: any, layer?: any): void {
   window.dispatchEvent(new CustomEvent('simulateur:map-view-ready'));
 }
 
+function sceneManifestUrl(sourceUrl: string, layer: CopcLayerLike): string {
+  const source = new URL(sourceUrl, window.location.href);
+  const manifest = new URL('/lidar/scene-manifest', window.location.origin);
+  manifest.searchParams.set('copc', `${source.pathname}${source.search}`);
+  if (layer.simulationBuildingsUrl) manifest.searchParams.set('buildings', layer.simulationBuildingsUrl);
+  manifest.searchParams.set('profile', layer.simulationProfile || 'balanced');
+  return manifest.toString();
+}
+
 function openStandaloneViewer(layer: CopcLayerLike): Promise<never> {
   const sourceUrl = layer.source?.url;
   if (!sourceUrl) {
@@ -60,6 +69,9 @@ function openStandaloneViewer(layer: CopcLayerLike): Promise<never> {
     }
     if (layer.simulationBuildingsUrl) {
       target.searchParams.set('buildings', layer.simulationBuildingsUrl);
+    }
+    if (isProcessed) {
+      target.searchParams.set('manifest', sceneManifestUrl(sourceUrl, layer));
     }
     window.location.assign(target.toString());
   }
