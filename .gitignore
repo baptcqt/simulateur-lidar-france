@@ -1,4 +1,6 @@
 .venv/
+.pdal-env/
+.runtime/
 node_modules/
 web/node_modules/
 web/dist/
@@ -7,5 +9,7 @@ __pycache__/
 *.pyc
 data/*
 !data/.gitkeep
+logs/*
+!logs/.gitkeep
 .vscode/
 .idea/
