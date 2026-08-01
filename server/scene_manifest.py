@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -14,10 +14,17 @@ SCENE_SCHEMA_VERSION = 1
 router = APIRouter(prefix="/lidar", tags=["scene-manifest"])
 
 
+def normalize_api_path(value: str) -> str:
+    parsed = urlsplit(value)
+    path = parsed.path if parsed.scheme or parsed.netloc else value.split("?", 1)[0].split("#", 1)[0]
+    return path.replace("\\", "/")
+
+
 def resolve_data_path(api_path: str) -> Path:
-    if not api_path.startswith("/files/"):
+    normalized = normalize_api_path(api_path)
+    if not normalized.startswith("/files/"):
         raise HTTPException(status_code=400, detail="Le manifeste nécessite un fichier local servi par /files/")
-    relative = api_path.removeprefix("/files/").replace("\\", "/")
+    relative = normalized.removeprefix("/files/")
     requested = (DATA_DIR / relative).resolve()
     data_root = DATA_DIR.resolve()
     if requested == data_root or data_root not in requested.parents:
@@ -64,8 +71,10 @@ def scene_manifest_from_legacy(
     buildings_path: str | None,
     profile: str,
 ) -> dict[str, Any]:
-    point_url = legacy.get("path") if isinstance(legacy.get("path"), str) else copc_path
+    point_url = legacy.get("path") if isinstance(legacy.get("path"), str) else normalize_api_path(copc_path)
     declared_buildings = legacy.get("buildingsPath") if isinstance(legacy.get("buildingsPath"), str) else buildings_path
+    if declared_buildings:
+        declared_buildings = normalize_api_path(declared_buildings)
     building_file = resolve_data_path(declared_buildings) if declared_buildings else None
     count = building_count(legacy, building_file)
     point_budget = legacy.get("pointBudgetHint")
@@ -156,7 +165,8 @@ def scene_manifest_for(
     buildings_path: str | None = None,
     profile: str = "balanced",
 ) -> dict[str, Any]:
-    copc_file = resolve_data_path(copc_path)
+    normalized_copc = normalize_api_path(copc_path)
+    copc_file = resolve_data_path(normalized_copc)
     if not copc_file.is_file():
         raise HTTPException(status_code=404, detail="COPC traité introuvable")
 
@@ -165,17 +175,18 @@ def scene_manifest_for(
     if persisted.get("schemaVersion") == SCENE_SCHEMA_VERSION and isinstance(persisted.get("artifacts"), list):
         return persisted
 
+    normalized_buildings = normalize_api_path(buildings_path) if buildings_path else None
     manifest = scene_manifest_from_legacy(
         persisted,
-        copc_path=copc_path,
-        buildings_path=buildings_path,
+        copc_path=normalized_copc,
+        buildings_path=normalized_buildings,
         profile=profile,
     )
     manifest["manifestPath"] = "/lidar/scene-manifest?" + urlencode(
         {
-            "copc": copc_path,
+            "copc": normalized_copc,
             "profile": profile,
-            **({"buildings": buildings_path} if buildings_path else {}),
+            **({"buildings": normalized_buildings} if normalized_buildings else {}),
         }
     )
     return manifest
