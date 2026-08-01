@@ -47,8 +47,13 @@ button { cursor: pointer; }
   top: 14px;
   right: 14px;
   z-index: 31;
+  display: flex;
+  flex-direction: column;
   width: 320px;
+  max-height: calc(100vh - 28px);
+  max-height: calc(100dvh - 28px);
   overflow: hidden;
+  overscroll-behavior: contain;
   border: 1px solid rgb(255 255 255 / 25%);
   border-radius: 12px;
   background: rgb(250 252 253 / 94%);
@@ -58,6 +63,7 @@ button { cursor: pointer; }
 
 #lidar-controls > header {
   display: flex;
+  flex: none;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -65,10 +71,11 @@ button { cursor: pointer; }
   border-bottom: 1px solid #d8dee3;
   background: rgb(240 244 247 / 92%);
 }
-#lidar-controls > header div { display: grid; gap: 2px; }
+#lidar-controls > header div { display: grid; min-width: 0; gap: 2px; }
 #lidar-controls > header strong { font-size: .98rem; }
-#lidar-controls > header span { color: #63707b; font-size: .76rem; }
+#lidar-controls > header span { color: #63707b; font-size: .76rem; overflow-wrap: anywhere; }
 #toggle-lidar-controls {
+  flex: none;
   width: 30px;
   height: 30px;
   border: 1px solid #c8d0d7;
@@ -78,12 +85,22 @@ button { cursor: pointer; }
   font-weight: 800;
 }
 
-#lidar-controls-body { display: grid; gap: 13px; padding: 13px; }
+#lidar-controls-body {
+  display: grid;
+  min-height: 0;
+  gap: 13px;
+  padding: 13px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
 #lidar-controls.collapsed { width: 230px; }
 #lidar-controls.collapsed #lidar-controls-body { display: none; }
 #lidar-controls.collapsed > header { border-bottom: 0; }
 
-.viewer-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; }
+.control-section { min-width: 0; }
+.viewer-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
 .viewer-actions button {
   min-height: 36px;
   padding: 7px 6px;
@@ -96,25 +113,27 @@ button { cursor: pointer; }
 }
 .viewer-actions button:hover { border-color: #2478b5; background: #edf6fc; }
 
-.control-row { display: grid; gap: 7px; }
+.control-row { display: grid; min-width: 0; gap: 7px; }
 .control-row > span { display: flex; justify-content: space-between; gap: 12px; color: #34414b; font-size: .8rem; font-weight: 650; }
 .control-row output { color: #1d6a9f; font-variant-numeric: tabular-nums; }
 .control-row select {
   width: 100%;
+  min-width: 0;
   padding: 8px 9px;
   border: 1px solid #b8c2ca;
   border-radius: 7px;
   background: #fff;
   color: #17202a;
 }
-.control-row input[type="range"] { width: 100%; accent-color: #2478b5; }
+.control-row input[type="range"] { width: 100%; min-width: 0; accent-color: #2478b5; }
 
-.layer-switches { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
+.layer-switches { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
 .layer-switches label {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 5px;
+  min-width: 0;
   min-height: 34px;
   padding: 5px;
   border: 1px solid #ccd4da;
@@ -122,8 +141,9 @@ button { cursor: pointer; }
   background: #f8fafb;
   font-size: .76rem;
   font-weight: 600;
+  overflow-wrap: anywhere;
 }
-.layer-switches input { accent-color: #2478b5; }
+.layer-switches input { flex: none; accent-color: #2478b5; }
 
 #lidar-live-stats {
   min-height: 39px;
@@ -189,12 +209,21 @@ button { cursor: pointer; }
 
 @media (max-width: 900px) {
   #lidar-toolbar { right: 14px; max-width: none; }
-  #lidar-controls { top: 72px; width: min(320px, calc(100vw - 28px)); }
+  #lidar-controls {
+    top: 72px;
+    width: min(320px, calc(100vw - 28px));
+    max-height: calc(100vh - 86px);
+    max-height: calc(100dvh - 86px);
+  }
 }
 
 @media (max-width: 620px) {
   #lidar-toolbar { align-items: stretch; flex-direction: column; }
-  #lidar-controls { top: 112px; }
+  #lidar-controls {
+    top: 112px;
+    max-height: calc(100vh - 126px);
+    max-height: calc(100dvh - 126px);
+  }
   #lidar-controls.collapsed { width: min(230px, calc(100vw - 28px)); }
   .layer-switches { grid-template-columns: 1fr; }
 }
