@@ -12,6 +12,10 @@
   background: rgba(245, 158, 11, 0.1);
 }
 
+.pipeline-status-card.warning {
+  border-left-color: #d97706;
+}
+
 #pipeline-status {
   display: grid;
   gap: 0.35rem;
@@ -25,11 +29,21 @@
 
 #pipeline-status span {
   color: #4b5563;
-  font-size: 0.86rem;
+  font-size: 0.82rem;
+}
+
+#pipeline-status .manifest-origin {
+  color: #66727d;
+  font-size: 0.76rem;
+}
+
+#pipeline-status .pipeline-warning {
+  color: #9a3412;
+  font-weight: 650;
 }
 
 body.simulation-processed #lidar-controls header span::after {
-  content: " · PDAL actif";
+  content: " · scène composée";
   color: #15803d;
   font-weight: 700;
 }
@@ -40,6 +54,28 @@ body.simulation-raw #lidar-controls header span::after {
   font-weight: 700;
 }
 
-body.simulation-processed #lidar-viewer {
+body[data-render-mode="simulation"] #lidar-viewer {
   background: linear-gradient(180deg, #9fb3c4 0%, #768c7b 100%);
+}
+
+.layer-switches label[data-state="ready"] {
+  border-color: #9abca4;
+  background: #f1f8f3;
+}
+
+.layer-switches label[data-state="empty"] {
+  border-color: #d7ad65;
+  background: #fff9ed;
+  color: #7c5b1a;
+}
+
+.layer-switches label[data-state="error"] {
+  border-color: #cf8585;
+  background: #fff3f3;
+  color: #8f2d2d;
+}
+
+.layer-switches label[data-state="empty"] input,
+.layer-switches label[data-state="error"] input {
+  opacity: 0.5;
 }
