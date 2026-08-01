@@ -42,12 +42,18 @@ function rememberMainView(view: any, layer?: any): void {
   window.dispatchEvent(new CustomEvent('simulateur:map-view-ready'));
 }
 
+function layerProfile(layer: CopcLayerLike): string {
+  if (layer.simulationProfile) return layer.simulationProfile;
+  const label = layer.id?.toLowerCase() ?? '';
+  return ['fluid', 'balanced', 'detailed'].find((candidate) => label.includes(candidate)) ?? 'balanced';
+}
+
 function sceneManifestUrl(sourceUrl: string, layer: CopcLayerLike): string {
   const source = new URL(sourceUrl, window.location.href);
   const manifest = new URL('/lidar/scene-manifest', window.location.origin);
   manifest.searchParams.set('copc', `${source.pathname}${source.search}`);
   if (layer.simulationBuildingsUrl) manifest.searchParams.set('buildings', layer.simulationBuildingsUrl);
-  manifest.searchParams.set('profile', layer.simulationProfile || 'balanced');
+  manifest.searchParams.set('profile', layerProfile(layer));
   return manifest.toString();
 }
 
@@ -64,9 +70,7 @@ function openStandaloneViewer(layer: CopcLayerLike): Promise<never> {
     target.searchParams.set('copc', sourceUrl);
     target.searchParams.set('label', layer.id || (isProcessed ? 'Zone LiDAR traitée PDAL' : 'Dalle COPC brute'));
     target.searchParams.set(isProcessed ? 'processed' : 'raw', '1');
-    if (layer.simulationProfile) {
-      target.searchParams.set('profile', layer.simulationProfile);
-    }
+    if (isProcessed) target.searchParams.set('profile', layerProfile(layer));
     if (layer.simulationBuildingsUrl) {
       target.searchParams.set('buildings', layer.simulationBuildingsUrl);
     }
